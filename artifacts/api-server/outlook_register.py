@@ -1193,8 +1193,24 @@ def register_one(ctrl, engine_name: str, headless: bool) -> dict:
             "upgrade-insecure-requests": "1",
         },
     )
-    # 注入额外 JS 指纹（navigator 属性）
+    # ── 深度指纹伪装（参考 HotmailBot Pro 技术点）──────────────────────────
+    import uuid as _uuid
+    machine_id = str(_uuid.uuid4())           # 每次会话生成唯一机器ID
+    canvas_noise = random.randint(1, 9999)    # canvas 哈希噪点种子
+    webgl_vendors = [
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Ti Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Apple Inc.", "Apple M1"),
+        ("Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+        ("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) Iris Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+    ]
+    webgl_vendor, webgl_renderer = random.choice(webgl_vendors)
+    # 随机插件列表（伪装成普通用户）
+    plugins_js = "[{name:'Chrome PDF Plugin'},{name:'Chrome PDF Viewer'},{name:'Native Client'}]"
+    # 注入所有指纹欺骗脚本
     context.add_init_script(f"""
+        // navigator 属性
         Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {hw_concurrency} }});
         Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {device_memory} }});
         Object.defineProperty(navigator, 'platform', {{ get: () => '{platform_str}' }});
@@ -1202,7 +1218,82 @@ def register_one(ctrl, engine_name: str, headless: bool) -> dict:
         Object.defineProperty(navigator, 'languages', {{ get: () => ['zh-CN', 'zh', 'en-US', 'en'] }});
         Object.defineProperty(screen, 'colorDepth', {{ get: () => 24 }});
         Object.defineProperty(screen, 'pixelDepth', {{ get: () => 24 }});
+        // 隐藏 webdriver 标志
+        Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+        // 插件伪装（非空 = 真实浏览器）
+        Object.defineProperty(navigator, 'plugins', {{
+            get: () => {{
+                const arr = {plugins_js};
+                arr.length = arr.length; return arr;
+            }}
+        }});
+        // canvas 指纹噪点
+        (function() {{
+            const orig = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function(type) {{
+                const ctx = this.getContext('2d');
+                if (ctx) {{
+                    const noise = {canvas_noise};
+                    const px = ctx.getImageData(0, 0, 1, 1);
+                    px.data[0] = (px.data[0] + noise) % 256;
+                    ctx.putImageData(px, 0, 0);
+                }}
+                return orig.apply(this, arguments);
+            }};
+            const orig2 = CanvasRenderingContext2D.prototype.getImageData;
+            CanvasRenderingContext2D.prototype.getImageData = function(x, y, w, h) {{
+                const data = orig2.apply(this, arguments);
+                const noise = {canvas_noise};
+                for (let i = 0; i < data.data.length; i += 100) {{
+                    data.data[i] = (data.data[i] + noise % 3) % 256;
+                }}
+                return data;
+            }};
+        }})();
+        // WebGL 指纹伪装
+        (function() {{
+            const getParam = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(param) {{
+                if (param === 37445) return '{webgl_vendor}';    // UNMASKED_VENDOR_WEBGL
+                if (param === 37446) return '{webgl_renderer}';  // UNMASKED_RENDERER_WEBGL
+                return getParam.apply(this, arguments);
+            }};
+            try {{
+                const getParam2 = WebGL2RenderingContext.prototype.getParameter;
+                WebGL2RenderingContext.prototype.getParameter = function(param) {{
+                    if (param === 37445) return '{webgl_vendor}';
+                    if (param === 37446) return '{webgl_renderer}';
+                    return getParam2.apply(this, arguments);
+                }};
+            }} catch(e) {{}}
+        }})();
+        // Audio 指纹噪点
+        (function() {{
+            const orig = AudioBuffer.prototype.getChannelData;
+            AudioBuffer.prototype.getChannelData = function(ch) {{
+                const data = orig.apply(this, arguments);
+                const noise = {canvas_noise} * 1e-7;
+                for (let i = 0; i < data.length; i += 200) {{
+                    data[i] += noise;
+                }}
+                return data;
+            }};
+        }})();
+        // 机器 ID（localStorage 写入，模拟真实设备持久化）
+        try {{
+            localStorage.setItem('device_id', '{machine_id}');
+            localStorage.setItem('machine_id', '{machine_id}');
+        }} catch(e) {{}}
+        // 电池 API（避免暴露无电池=服务器环境）
+        try {{
+            navigator.getBattery = async () => ({{
+                charging: true, chargingTime: 0,
+                dischargingTime: Infinity, level: {round(random.uniform(0.6, 1.0), 2)},
+                addEventListener: () => {{}}, removeEventListener: () {{}}
+            }});
+        }} catch(e) {{}}
     """)
+    print(f"[register] 指纹: UA={user_agent[:40]}... WebGL={webgl_vendor[:20]} Screen={sw}x{sh} TZ={timezone_id} MachineID={machine_id[:8]}...", flush=True)
     page = context.new_page()
     t0 = time.time()
 
@@ -1245,6 +1336,7 @@ def main():
     parser = argparse.ArgumentParser(description="Outlook 批量注册 (参考 outlook-batch-manager)")
     parser.add_argument("--count",           type=int,   default=1,            help="注册数量")
     parser.add_argument("--proxy",           type=str,   default="",           help="代理, 如 socks5://127.0.0.1:1080")
+    parser.add_argument("--proxies",         type=str,   default="",           help="多代理轮换（逗号分隔），每次注册轮换一个节点")
     parser.add_argument("--engine",          type=str,   default="patchright", choices=["patchright","playwright"])
     parser.add_argument("--headless",        type=str,   default="true",       help="true/false")
     parser.add_argument("--wait",            type=int,   default=BOT_PROTECTION_WAIT, help="bot_protection_wait (秒)")
@@ -1269,21 +1361,39 @@ def main():
         solver = build_solver(captcha_service, captcha_key)
         print(f"[captcha] 打码服务已启用: {captcha_service}", flush=True)
 
-    ctrl = CtrlCls(
-        proxy=args.proxy or "",
-        wait_ms=args.wait,
-        max_captcha_retries=args.retries,
-        captcha_solver=solver,
-    )
+    # 解析代理列表（--proxies 优先于 --proxy）
+    proxy_list = []
+    if args.proxies:
+        proxy_list = [p.strip() for p in args.proxies.split(",") if p.strip()]
+    if not proxy_list and args.proxy:
+        proxy_list = [args.proxy.strip()]
 
     svc_hint = f"  打码服务={captcha_service}" if solver else ""
     print(f"\n🚀 Outlook 批量注册  引擎={args.engine}  headless={headless}  count={args.count}{svc_hint}")
     print(f"   bot_protection_wait={args.wait}s  max_captcha_retries={args.retries}")
+    if len(proxy_list) > 1:
+        print(f"   代理轮换池: {len(proxy_list)} 个节点")
+    elif proxy_list:
+        import re as _re
+        masked_proxy = _re.sub(r'(:)([^:@]{4})[^:@]*(@)', r'\1****\3', proxy_list[0])
+        print(f"   代理: {masked_proxy}")
     print(f"   入口URL: {REGISTER_URL}\n{'─'*60}")
 
     results = []
     for i in range(args.count):
-        print(f"\n[{i+1}/{args.count}] 开始注册...")
+        # 轮换代理（每次注册用不同节点）
+        cur_proxy = proxy_list[i % len(proxy_list)] if proxy_list else ""
+        if len(proxy_list) > 1:
+            print(f"\n[{i+1}/{args.count}] 开始注册… 节点 [{(i % len(proxy_list))+1}/{len(proxy_list)}]: {cur_proxy[:40]}...")
+        else:
+            print(f"\n[{i+1}/{args.count}] 开始注册...")
+
+        ctrl = CtrlCls(
+            proxy=cur_proxy,
+            wait_ms=args.wait,
+            max_captcha_retries=args.retries,
+            captcha_solver=solver,
+        )
         r = register_one(ctrl, args.engine, headless)
         results.append(r)
 

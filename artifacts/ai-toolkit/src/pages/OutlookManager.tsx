@@ -30,7 +30,7 @@ export default function OutlookManager() {
   // Step 2 – 自动化注册
   const [regEngine,  setRegEngine]   = useState("patchright");
   const [regCount,   setRegCount]    = useState(1);
-  const [regProxy,   setRegProxy]    = useState("");
+  const [regProxy,   setRegProxy]    = useState("");   // 代理（多行/逗号分隔均支持）
   const [regWait,    setRegWait]     = useState(11);
   const [regDelay,   setRegDelay]    = useState(5);
   const [regRetries, setRegRetries]  = useState(2);
@@ -93,7 +93,10 @@ export default function OutlookManager() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          count: regCount, proxy: regProxy, headless: regHeadless,
+          count: regCount,
+          // 多代理支持：发 proxies 字段（换行或逗号分隔）
+          proxies: regProxy,
+          headless: regHeadless,
           delay: regDelay, engine: regEngine, wait: regWait, retries: regRetries,
         }),
       });
@@ -448,21 +451,45 @@ export default function OutlookManager() {
               </div>
             </div>
 
-            {/* 代理 */}
+            {/* 代理节点池 */}
             <div>
-              <label className="text-[11px] text-gray-500 mb-1 block">
-                代理地址 <span className="text-red-400">（强烈建议使用住宅代理，避免服务器 IP 被 Microsoft 识别）</span>
+              <label className="text-[11px] text-gray-500 mb-1 flex items-center justify-between">
+                <span>
+                  代理节点池 <span className="text-red-400">（强烈建议住宅代理）</span>
+                </span>
+                <span className="text-blue-400 text-[10px]">
+                  支持多个节点（每行一个），每次注册自动轮换
+                </span>
               </label>
-              <input value={regProxy} onChange={e => setRegProxy(e.target.value)} disabled={regBusy}
-                placeholder="socks5://user:pass@127.0.0.1:1080  或  http://proxy:port"
-                className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50 placeholder-gray-600" />
+              <textarea
+                value={regProxy}
+                onChange={e => setRegProxy(e.target.value)}
+                disabled={regBusy}
+                rows={regProxy.split('\n').filter(Boolean).length > 1 ? Math.min(5, regProxy.split('\n').length + 1) : 2}
+                placeholder={`socks5://user:pass@pool-us.quarkip.io:7777\nsocks5://user:pass@pool-us2.quarkip.io:7777\nhttp://user:pass@node3.proxy.io:8080`}
+                className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50 placeholder-gray-600 resize-none"
+              />
+              {regProxy.split('\n').filter(l => l.trim()).length > 1 && (
+                <div className="mt-1 text-[10px] text-blue-400">
+                  已输入 {regProxy.split('\n').filter(l => l.trim()).length} 个节点，将按顺序轮换
+                </div>
+              )}
             </div>
 
-            {/* 代理说明 */}
-            <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 text-xs text-gray-400">
-              <span className="text-amber-400 font-semibold">⚠ 注意：</span> Microsoft 对服务器/数据中心 IP 进行严格限制。
-              注册成功率取决于代理 IP 质量。建议使用 <span className="text-blue-400">住宅代理</span> 或 <span className="text-blue-400">真实手机网络</span>。
-              无代理时流程仍会运行直到 CAPTCHA 阶段（用于测试）。
+            {/* 指纹伪装说明 */}
+            <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-3 text-xs text-gray-400 space-y-1">
+              <div className="text-blue-400 font-semibold mb-1">自动启用深度反检测技术：</div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px]">
+                <span>✓ Canvas 指纹噪点</span>
+                <span>✓ WebGL 渲染器伪装</span>
+                <span>✓ 音频指纹随机化</span>
+                <span>✓ 唯一机器 ID 生成</span>
+                <span>✓ 随机屏幕分辨率</span>
+                <span>✓ 随机 User-Agent</span>
+                <span>✓ 随机美国时区</span>
+                <span>✓ 插件列表伪装</span>
+              </div>
+              <div className="mt-1 text-amber-400">⚠ 住宅代理 IP 质量是最关键因素，再好的指纹配合数据中心 IP 也会失败</div>
             </div>
 
             <div className="flex gap-3">

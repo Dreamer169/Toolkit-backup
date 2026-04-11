@@ -941,6 +941,7 @@ router.post("/tools/outlook/register", async (req, res) => {
   const {
     count    = 1,
     proxy: proxyInput = "",
+    proxies: proxiesInput = "",   // 多代理轮换：逗号或换行分隔
     headless = true,
     delay    = 5,
     engine   = "patchright",
@@ -948,12 +949,17 @@ router.post("/tools/outlook/register", async (req, res) => {
     retries  = 2,
     autoProxy = false,
   } = req.body as {
-    count?: number; proxy?: string; headless?: boolean; delay?: number;
+    count?: number; proxy?: string; proxies?: string; headless?: boolean; delay?: number;
     engine?: string; wait?: number; retries?: number; autoProxy?: boolean;
   };
 
+  // 解析多代理列表（支持换行或逗号分隔）
+  const proxyList: string[] = proxiesInput
+    ? proxiesInput.split(/[\n,]+/).map((p: string) => p.trim()).filter(Boolean)
+    : proxyInput ? [proxyInput] : [];
+
   // 如果没有提供代理，且 autoProxy=true，则从代理池自动选取
-  let proxy = proxyInput;
+  let proxy = proxyList[0] || "";
   let autoProxyId: number | null = null;
   if (!proxy && autoProxy) {
     try {
@@ -1016,7 +1022,13 @@ router.post("/tools/outlook/register", async (req, res) => {
     "--wait",     String(wait),
     "--retries",  String(retries),
   ];
-  if (proxy) args.push("--proxy", proxy);
+  // 多代理支持：列表 > 2 个时传 --proxies（逗号分隔），否则传 --proxy
+  if (proxyList.length > 1) {
+    args.push("--proxies", proxyList.join(","));
+    job.logs.push({ type: "log", message: `🌐 代理轮换池: ${proxyList.length} 个节点` });
+  } else if (proxy) {
+    args.push("--proxy", proxy);
+  }
   if (captchaService && captchaKey) {
     args.push("--captcha-service", captchaService, "--captcha-key", captchaKey);
     job.logs.push({ type: "log", message: `🔑 打码服务: ${captchaService}` });
