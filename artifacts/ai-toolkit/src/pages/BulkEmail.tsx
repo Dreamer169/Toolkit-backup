@@ -27,6 +27,15 @@ export default function BulkEmail() {
       .then((d) => { if (d.domains?.length) { setDomains(d.domains); setDomain(d.domains[0]); } });
   }, []);
 
+  const [useHumanName, setUseHumanName] = useState(true);
+  const [preview, setPreview] = useState<Array<{username:string;firstName:string;lastName:string;pattern:string}>>([]);
+
+  const loadPreview = async () => {
+    const r = await fetch(`/api/tools/email/gen-username?count=${count}`);
+    const d = await r.json();
+    if (d.success) setPreview(d.usernames);
+  };
+
   const generate = async () => {
     setLoading(true);
     setAccounts([]);
@@ -35,12 +44,25 @@ export default function BulkEmail() {
     if (pollRef.current) clearInterval(pollRef.current);
 
     const results: Account[] = [];
-    const pass = () => Math.random().toString(36).slice(2, 14);
-    const user = () => Math.random().toString(36).slice(2, 12) + Math.floor(Math.random() * 999);
+
+    // 预先获取所有人名用户名
+    let humanNames: Array<{username:string;password:string}> = [];
+    if (useHumanName) {
+      const r = await fetch(`/api/tools/email/gen-username?count=${count}`);
+      const d = await r.json();
+      if (d.success) humanNames = d.usernames;
+    }
 
     for (let i = 0; i < count; i++) {
-      const address  = `${user()}@${domain}`;
-      const password = pass();
+      let username: string, password: string;
+      if (useHumanName && humanNames[i]) {
+        username = humanNames[i].username;
+        password = humanNames[i].password;
+      } else {
+        username = Math.random().toString(36).slice(2, 12) + Math.floor(Math.random() * 999);
+        password = Math.random().toString(36).slice(2, 14);
+      }
+      const address  = `${username}@${domain}`;
       try {
         const r = await fetch("/api/tools/email/create", {
           method: "POST",
@@ -128,6 +150,37 @@ export default function BulkEmail() {
               className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500" />
           </div>
         </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => { setUseHumanName(!useHumanName); setPreview([]); }}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-all ${useHumanName ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-[#21262d] border-[#30363d] text-gray-500"}`}
+          >
+            <span className={`w-2 h-2 rounded-full ${useHumanName ? "bg-emerald-400" : "bg-gray-600"}`} />
+            👤 真实人名
+          </button>
+          {useHumanName && (
+            <button onClick={loadPreview} className="text-xs px-3 py-2 rounded-lg border border-[#30363d] bg-[#21262d] text-gray-400 hover:text-white transition-all">
+              预览名字
+            </button>
+          )}
+          <span className="text-xs text-gray-500 flex-1">
+            {useHumanName ? "生成 JohnSmith88 / j.davis92 等真实人名格式，大幅提升注册成功率" : "使用随机字符串"}
+          </span>
+        </div>
+
+        {useHumanName && preview.length > 0 && (
+          <div className="bg-[#0d1117] rounded-lg p-3 space-y-1 max-h-32 overflow-y-auto">
+            <p className="text-xs text-gray-500 mb-2">名字预览（实际生成时刷新）：</p>
+            {preview.slice(0, 6).map((p, i) => (
+              <div key={i} className="flex items-center gap-3 text-xs">
+                <span className="font-mono text-blue-300 w-36 truncate">{p.username}@<span className="text-gray-500">{domain}</span></span>
+                <span className="text-gray-500">{p.firstName} {p.lastName}</span>
+                <span className="text-gray-600 text-[10px]">{p.pattern}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <button onClick={generate} disabled={loading || !domain}
           className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-white font-medium text-sm transition-all">

@@ -3,12 +3,99 @@ import { createHash, randomBytes, randomUUID } from "crypto";
 
 const router: IRouter = Router();
 
+// ── 人名数据库 ────────────────────────────────────────────
+const FIRST_NAMES = [
+  "James","John","Robert","Michael","William","David","Richard","Joseph","Thomas","Charles",
+  "Christopher","Daniel","Matthew","Anthony","Mark","Donald","Steven","Paul","Andrew","Joshua",
+  "Kenneth","Kevin","Brian","George","Timothy","Ronald","Edward","Jason","Jeffrey","Ryan",
+  "Jacob","Gary","Nicholas","Eric","Jonathan","Stephen","Larry","Justin","Scott","Brandon",
+  "Benjamin","Samuel","Raymond","Gregory","Frank","Alexander","Patrick","Jack","Dennis","Jerry",
+  "Mary","Patricia","Jennifer","Linda","Barbara","Elizabeth","Susan","Jessica","Sarah","Karen",
+  "Lisa","Nancy","Betty","Margaret","Sandra","Ashley","Dorothy","Kimberly","Emily","Donna",
+  "Michelle","Carol","Amanda","Melissa","Deborah","Stephanie","Rebecca","Sharon","Laura","Cynthia",
+  "Kathleen","Amy","Angela","Shirley","Anna","Brenda","Pamela","Emma","Nicole","Helen",
+  "Samantha","Katherine","Christine","Debra","Rachel","Carolyn","Janet","Catherine","Maria","Heather",
+  "Emma","Olivia","Noah","Liam","Ava","Sophia","Isabella","Mia","Charlotte","Amelia",
+  "Lucas","Ethan","Mason","Logan","Aiden","Jackson","Sebastian","Oliver","Elijah","Owen",
+];
+const LAST_NAMES = [
+  "Smith","Johnson","Williams","Brown","Jones","Garcia","Miller","Davis","Rodriguez","Martinez",
+  "Hernandez","Lopez","Gonzalez","Wilson","Anderson","Thomas","Taylor","Moore","Jackson","Martin",
+  "Lee","Perez","Thompson","White","Harris","Sanchez","Clark","Ramirez","Lewis","Robinson",
+  "Walker","Young","Allen","King","Wright","Scott","Torres","Nguyen","Hill","Flores",
+  "Green","Adams","Nelson","Baker","Hall","Rivera","Campbell","Mitchell","Carter","Roberts",
+  "Turner","Phillips","Evans","Edwards","Collins","Stewart","Morris","Morales","Murphy","Cook",
+  "Rogers","Gutierrez","Ortiz","Morgan","Cooper","Peterson","Bailey","Reed","Kelly","Howard",
+  "Ramos","Kim","Cox","Ward","Richardson","Watson","Brooks","Chavez","Wood","James",
+  "Bennett","Gray","Mendoza","Ruiz","Hughes","Price","Alvarez","Castillo","Sanders","Patel",
+  "Myers","Long","Ross","Foster","Jimenez","Powell","Jenkins","Perry","Russell","Sullivan",
+  "Parker","Butler","Barnes","Fisher","Henderson","Coleman","Simmons","Patterson","Jordan","Reynolds",
+  "Hamilton","Graham","Kim","Griffin","Wallace","Moreno","West","Cole","Hayes","Bryant",
+  "Hacker","Dev","Code","Tech","Net","Web","Pro","Max","Ace","Fox",
+];
+
+function genHumanUsername(): { username: string; firstName: string; lastName: string; pattern: string } {
+  const fn = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)];
+  const ln = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)];
+  const fn_lc = fn.toLowerCase();
+  const ln_lc = ln.toLowerCase();
+  const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
+  const year2 = String(ri(70, 99));
+  const year4 = String(ri(1980, 2001));
+  const num2  = String(ri(10, 99));
+  const num3  = String(ri(100, 999));
+  const patterns = [
+    // Common real-person patterns (highest success rate)
+    () => ({ u: fn + ln, p: "FirstLast" }),
+    () => ({ u: fn + ln + year2, p: "FirstLast+year" }),
+    () => ({ u: fn_lc + "." + ln_lc, p: "first.last" }),
+    () => ({ u: fn_lc + ln_lc + num2, p: "firstlast+num" }),
+    () => ({ u: fn[0].toLowerCase() + ln_lc + num2, p: "initial+last+num" }),
+    () => ({ u: fn[0].toLowerCase() + ln_lc + year2, p: "initial+last+year" }),
+    () => ({ u: fn_lc + ln[0].toLowerCase() + num3, p: "first+initial+num" }),
+    () => ({ u: fn_lc + "_" + ln_lc, p: "first_last" }),
+    () => ({ u: fn_lc + "_" + ln_lc + num2, p: "first_last+num" }),
+    () => ({ u: ln_lc + fn_lc + num2, p: "LastFirst+num" }),
+    () => ({ u: fn + ln + num3, p: "FirstLast+num3" }),
+    () => ({ u: fn_lc + year4, p: "first+year4" }),
+    () => ({ u: fn[0].toLowerCase() + "." + ln_lc + num2, p: "i.last+num" }),
+  ];
+  const res = patterns[Math.floor(Math.random() * patterns.length)]();
+  return { username: res.u, firstName: fn, lastName: ln, pattern: res.p };
+}
+
+function genStrongPassword(length?: number): string {
+  const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
+  const n = length ?? ri(12, 16);
+  const lower = "abcdefghijklmnopqrstuvwxyz";
+  const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const digits = "0123456789";
+  const specials = "!@#$%^&*";
+  const all = lower + upper + digits + specials;
+  while (true) {
+    let pw = "";
+    for (let i = 0; i < n; i++) pw += all[Math.floor(Math.random() * all.length)];
+    if (/[a-z]/.test(pw) && /[A-Z]/.test(pw) && /\d/.test(pw) && /[!@#$%^&*]/.test(pw)) return pw;
+  }
+}
+
 // ── 工具函数 ──────────────────────────────────────────────
 function newMachineId() {
   return createHash("sha256").update(randomBytes(32)).digest("hex");
 }
 function newUUID() { return randomUUID(); }
 function newSqmId() { return `{${randomUUID().toUpperCase()}}`; }
+
+// ── 人名邮箱用户名生成 ─────────────────────────────────────
+router.get("/tools/email/gen-username", (req, res) => {
+  const count = Math.min(50, Math.max(1, Number(req.query.count) || 10));
+  const results = Array.from({ length: count }, () => {
+    const info = genHumanUsername();
+    const password = genStrongPassword();
+    return { ...info, password };
+  });
+  res.json({ success: true, count, usernames: results });
+});
 
 const UA_POOL = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -619,6 +706,57 @@ router.get("/tools/outlook/profile", async (req, res) => {
   } catch (e: unknown) {
     res.status(500).json({ success: false, error: String(e) });
   }
+});
+
+// ── Playwright Outlook 批量注册 (SSE) ────────────────────
+router.post("/tools/outlook/register", async (req, res) => {
+  const { count = 1, proxy = "", headless = true, delay = 3 } = req.body as {
+    count?: number; proxy?: string; headless?: boolean; delay?: number;
+  };
+  const n = Math.min(10, Math.max(1, count));
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  const { spawn } = await import("child_process");
+  const scriptPath = new URL("../../outlook_register.py", import.meta.url).pathname;
+  const args = [
+    scriptPath, "--count", String(n),
+    "--headless", String(headless),
+    "--delay", String(delay),
+  ];
+  if (proxy) args.push("--proxy", proxy);
+
+  send({ type: "start", message: `启动 Playwright 注册 ${n} 个 Outlook 账号...` });
+
+  const child = spawn("python3", args, { env: { ...process.env, PYTHONUNBUFFERED: "1" } });
+
+  child.stdout.on("data", (chunk: Buffer) => {
+    const lines = chunk.toString().split("\n").filter(Boolean);
+    for (const line of lines) {
+      if (line.startsWith("──") || line.startsWith("🚀")) continue;
+      const isOk  = line.includes("✅");
+      const isFail = line.includes("❌");
+      send({ type: isOk ? "success" : isFail ? "error" : "log", message: line.trim() });
+    }
+  });
+
+  child.stderr.on("data", (chunk: Buffer) => {
+    const msg = chunk.toString().trim();
+    if (msg && !msg.includes("DeprecationWarning")) {
+      send({ type: "log", message: `[stderr] ${msg.slice(0, 200)}` });
+    }
+  });
+
+  child.on("close", (code) => {
+    send({ type: "done", exitCode: code, message: `注册任务完成 (退出码: ${code})` });
+    res.end();
+  });
+
+  req.on("close", () => child.kill());
 });
 
 router.get("/tools/ip-check", async (req, res) => {
