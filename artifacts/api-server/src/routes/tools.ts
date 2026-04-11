@@ -773,6 +773,62 @@ router.get("/tools/outlook/profile", async (req, res) => {
   }
 });
 
+// ── 微软账号存在性检验（公开 GetCredentialType 接口）───────
+router.post("/tools/outlook/check-account", async (req, res) => {
+  const { email } = req.body as { email?: string };
+  if (!email) { res.status(400).json({ success: false, error: "email 不能为空" }); return; }
+  try {
+    const r = await fetch("https://login.microsoftonline.com/common/GetCredentialType", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0",
+        "Origin": "https://login.microsoftonline.com",
+      },
+      body: JSON.stringify({
+        username: email,
+        isOtherIdpSupported: true,
+        checkPhones: false,
+        isRemoteNGCSupported: false,
+        isCookieBannerShown: false,
+        isFidoSupported: false,
+        originalRequest: "",
+        flowToken: "",
+      }),
+    });
+    const data = await r.json() as { IfExistsResult?: number; ThrottleStatus?: number; Credentials?: unknown };
+    // IfExistsResult: 0 = 存在, 1 = 不存在, 4 = 未知/需要验证, 5 = 重定向到其他 IdP
+    const exists = data.IfExistsResult === 0 || data.IfExistsResult === 5;
+    const throttled = data.ThrottleStatus === 1;
+    res.json({ success: true, exists, ifExistsResult: data.IfExistsResult, throttled });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+// 批量检验多个账号是否存在
+router.post("/tools/outlook/check-accounts-batch", async (req, res) => {
+  const { emails } = req.body as { emails?: string[] };
+  if (!emails?.length) { res.status(400).json({ success: false, error: "emails 不能为空" }); return; }
+  const results: Array<{ email: string; exists: boolean; ifExistsResult: number }> = [];
+  for (const email of emails.slice(0, 20)) {
+    try {
+      const r = await fetch("https://login.microsoftonline.com/common/GetCredentialType", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Origin": "https://login.microsoftonline.com" },
+        body: JSON.stringify({ username: email, isOtherIdpSupported: true, checkPhones: false, isRemoteNGCSupported: false, isCookieBannerShown: false, isFidoSupported: false, originalRequest: "", flowToken: "" }),
+      });
+      const data = await r.json() as { IfExistsResult?: number };
+      const exists = data.IfExistsResult === 0 || data.IfExistsResult === 5;
+      results.push({ email, exists, ifExistsResult: data.IfExistsResult ?? -1 });
+    } catch {
+      results.push({ email, exists: false, ifExistsResult: -1 });
+    }
+    await new Promise(r => setTimeout(r, 300)); // 避免限流
+  }
+  res.json({ success: true, results });
+});
+
 // ── 微软设备码授权流程（Device Code Flow）──────────────────
 // 用户不需要 Redirect URI，只需访问 aka.ms/devicelogin 输入短码
 router.post("/tools/outlook/device-code", async (req, res) => {

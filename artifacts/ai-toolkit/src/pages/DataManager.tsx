@@ -97,6 +97,8 @@ function AccountsPanel() {
   const [form, setForm] = useState({ platform: "outlook", email: "", password: "", username: "", token: "", status: "active", notes: "" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResults, setVerifyResults] = useState<Record<string, boolean | null>>({}); // email → exists?
 
   const load = useCallback(async () => {
     const q = new URLSearchParams();
@@ -139,6 +141,33 @@ function AccountsPanel() {
     window.open(`${API}/data/accounts/export?${q}`);
   }
 
+  async function verifyOutlookAccounts() {
+    const outlookAccs = accounts.filter(a => a.platform === "outlook");
+    if (!outlookAccs.length) { setMsg("⚠ 没有 Outlook 账号可验证"); return; }
+    setVerifying(true); setMsg("");
+    const emails = outlookAccs.map(a => a.email);
+    try {
+      const d = await fetch(`${API}/tools/outlook/check-accounts-batch`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emails }),
+      }).then(r => r.json()).catch(() => ({}));
+      if (d.success) {
+        const map: Record<string, boolean | null> = {};
+        for (const r of d.results as Array<{ email: string; exists: boolean }>) {
+          map[r.email] = r.exists;
+        }
+        setVerifyResults(map);
+        const valid = d.results.filter((r: { exists: boolean }) => r.exists).length;
+        const total = d.results.length;
+        setMsg(valid === 0
+          ? `❌ 验证完成：${total} 个账号均不存在于微软（注册未成功，需重新注册）`
+          : `✅ 验证完成：${valid}/${total} 个账号真实有效`
+        );
+      }
+    } catch (e) { setMsg("❌ 验证失败: " + String(e)); }
+    setVerifying(false);
+  }
+
   return (
     <div className="space-y-4">
       {/* 工具栏 */}
@@ -154,8 +183,11 @@ function AccountsPanel() {
           <option value="banned">已封禁</option>
         </select>
         <input value={filter.search} onChange={e => setFilter(f => ({...f,search:e.target.value}))} placeholder="搜索 email/备注…" className="bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-sm text-white placeholder-gray-600 flex-1 min-w-32" />
-        <div className="flex gap-1 ml-auto">
+        <div className="flex gap-1 ml-auto flex-wrap">
           <button onClick={load} title="刷新数据" className="px-3 py-1.5 bg-[#21262d] border border-[#30363d] rounded text-xs text-gray-300 hover:bg-[#30363d] hover:text-white">🔄 刷新</button>
+          <button onClick={verifyOutlookAccounts} disabled={verifying} title="检查 Outlook 账号是否真实存在于微软服务器" className="px-3 py-1.5 bg-[#21262d] border border-orange-500/30 rounded text-xs text-orange-400 hover:bg-orange-500/10 disabled:opacity-50">
+            {verifying ? "验证中…" : "🔍 验证账号"}
+          </button>
           <button onClick={() => exportAccounts("txt")} className="px-3 py-1.5 bg-[#21262d] border border-[#30363d] rounded text-xs text-gray-300 hover:bg-[#30363d]">导出 TXT</button>
           <button onClick={() => exportAccounts("csv")} className="px-3 py-1.5 bg-[#21262d] border border-[#30363d] rounded text-xs text-gray-300 hover:bg-[#30363d]">导出 CSV</button>
           <button onClick={() => exportAccounts("json")} className="px-3 py-1.5 bg-[#21262d] border border-[#30363d] rounded text-xs text-gray-300 hover:bg-[#30363d]">导出 JSON</button>
@@ -164,7 +196,7 @@ function AccountsPanel() {
         </div>
       </div>
 
-      {msg && <p className={`text-sm px-3 py-2 rounded ${msg.startsWith("✅") ? "bg-emerald-900/40 text-emerald-300" : "bg-red-900/40 text-red-300"}`}>{msg}</p>}
+      {msg && <p className={`text-sm px-3 py-2 rounded ${msg.startsWith("✅") ? "bg-emerald-900/40 text-emerald-300" : msg.startsWith("⚠") ? "bg-yellow-900/30 text-yellow-300" : "bg-red-900/40 text-red-300"}`}>{msg}</p>}
 
       {/* 添加弹窗 */}
       {showAdd && (
@@ -228,22 +260,32 @@ function AccountsPanel() {
 
       {/* 账号列表 */}
       <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
-        <div className="grid grid-cols-[80px_1fr_1fr_90px_70px_60px] gap-2 px-3 py-2 bg-[#21262d] text-xs text-gray-500 font-medium">
-          <span>平台</span><span>邮箱</span><span>密码/备注</span><span>状态</span><span>创建时间</span><span></span>
+        <div className="grid grid-cols-[70px_1fr_1fr_80px_60px_80px_44px] gap-2 px-3 py-2 bg-[#21262d] text-xs text-gray-500 font-medium">
+          <span>平台</span><span>邮箱</span><span>密码/备注</span><span>状态</span><span>创建</span><span>微软验证</span><span></span>
         </div>
         {accounts.length === 0 && (
           <p className="text-center text-gray-600 text-sm py-8">暂无账号，点击「添加账号」或「批量导入」</p>
         )}
-        {accounts.map(a => (
-          <div key={a.id} className="grid grid-cols-[80px_1fr_1fr_90px_70px_60px] gap-2 px-3 py-2 border-t border-[#21262d] text-xs hover:bg-[#21262d]/50 group items-center">
-            <span className={`font-medium ${PLATFORM_COLORS[a.platform] ?? "text-gray-400"}`}>{a.platform}</span>
-            <span className="text-white font-mono truncate">{a.email}</span>
-            <span className="text-gray-400 font-mono truncate">{a.notes || a.password}</span>
-            <span className={`px-2 py-0.5 rounded-full text-center w-fit ${a.status === "active" ? "bg-emerald-900/40 text-emerald-400" : a.status === "banned" ? "bg-red-900/40 text-red-400" : "bg-gray-800 text-gray-500"}`}>{a.status === "active" ? "有效" : a.status === "banned" ? "封禁" : "失效"}</span>
-            <span className="text-gray-600">{formatDate(a.created_at).split(" ")[0]}</span>
-            <button onClick={() => deleteAccount(a.id)} className="text-red-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs">删除</button>
-          </div>
-        ))}
+        {accounts.map(a => {
+          const vr = verifyResults[a.email];
+          return (
+            <div key={a.id} className="grid grid-cols-[70px_1fr_1fr_80px_60px_80px_44px] gap-2 px-3 py-2 border-t border-[#21262d] text-xs hover:bg-[#21262d]/50 group items-center">
+              <span className={`font-medium ${PLATFORM_COLORS[a.platform] ?? "text-gray-400"}`}>{a.platform}</span>
+              <span className="text-white font-mono truncate">{a.email}</span>
+              <span className="text-gray-400 font-mono truncate">{a.notes || a.password}</span>
+              <span className={`px-2 py-0.5 rounded-full text-center w-fit ${a.status === "active" ? "bg-emerald-900/40 text-emerald-400" : a.status === "banned" ? "bg-red-900/40 text-red-400" : "bg-gray-800 text-gray-500"}`}>{a.status === "active" ? "有效" : a.status === "banned" ? "封禁" : "失效"}</span>
+              <span className="text-gray-600">{formatDate(a.created_at).split(" ")[0]}</span>
+              <span className="text-center">
+                {a.platform === "outlook" ? (
+                  vr === undefined ? <span className="text-gray-600">—</span> :
+                  vr === true ? <span className="text-emerald-400 font-bold">✅ 真实</span> :
+                  <span className="text-red-400 font-bold">❌ 不存在</span>
+                ) : <span className="text-gray-700">—</span>}
+              </span>
+              <button onClick={() => deleteAccount(a.id)} className="text-red-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs">删除</button>
+            </div>
+          );
+        })}
       </div>
       <p className="text-xs text-gray-600 text-right">共 {accounts.length} 条</p>
     </div>
@@ -297,7 +339,7 @@ function IdentitiesPanel() {
         <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 bg-emerald-700 rounded text-xs text-white hover:bg-emerald-600">+ 添加身份</button>
       </div>
 
-      {msg && <p className={`text-sm px-3 py-2 rounded ${msg.startsWith("✅") ? "bg-emerald-900/40 text-emerald-300" : "bg-red-900/40 text-red-300"}`}>{msg}</p>}
+      {msg && <p className={`text-sm px-3 py-2 rounded ${msg.startsWith("✅") ? "bg-emerald-900/40 text-emerald-300" : msg.startsWith("⚠") ? "bg-yellow-900/30 text-yellow-300" : "bg-red-900/40 text-red-300"}`}>{msg}</p>}
 
       {showAdd && (
         <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 space-y-3">
@@ -388,7 +430,7 @@ function EmailsPanel() {
         <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 bg-emerald-700 rounded text-xs text-white hover:bg-emerald-600">+ 添加邮箱</button>
       </div>
 
-      {msg && <p className={`text-sm px-3 py-2 rounded ${msg.startsWith("✅") ? "bg-emerald-900/40 text-emerald-300" : "bg-red-900/40 text-red-300"}`}>{msg}</p>}
+      {msg && <p className={`text-sm px-3 py-2 rounded ${msg.startsWith("✅") ? "bg-emerald-900/40 text-emerald-300" : msg.startsWith("⚠") ? "bg-yellow-900/30 text-yellow-300" : "bg-red-900/40 text-red-300"}`}>{msg}</p>}
 
       {showAdd && (
         <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 space-y-3">

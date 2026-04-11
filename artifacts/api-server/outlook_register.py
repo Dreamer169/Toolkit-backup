@@ -337,6 +337,40 @@ class BaseController:
             if not captcha_ok:
                 return False, "验证码处理失败", email
 
+            # ── 验证注册真正完成（等待跳转到成功页）────────────────────
+            # 微软成功页：account.live.com, outlook.com, login.live.com/login.srf
+            # 只有页面实际跳转到这些域才算真正注册成功
+            try:
+                page.wait_for_url(
+                    lambda u: any(x in u for x in [
+                        "account.live.com",
+                        "account.microsoft.com",
+                        "outlook.live.com",
+                        "outlook.com/mail",
+                        "login.live.com/login.srf",
+                    ]),
+                    timeout=30000,
+                )
+                print("[register] ✅ 检测到成功跳转页", flush=True)
+            except Exception:
+                # 检查当前页面是否有成功标志（避免误判）
+                cur_url = page.url
+                success_keywords = ["account.live", "account.microsoft", "outlook.live", "outlook.com/mail"]
+                if not any(k in cur_url for k in success_keywords):
+                    # 尝试等待页面出现 "你好" 或 "欢迎" 等完成标志
+                    try:
+                        page.wait_for_selector(
+                            '[data-testid="ocid-login"] , [aria-label="Outlook"] , .welcome-msg , #mectrl_headerPicture',
+                            timeout=5000,
+                        )
+                    except Exception:
+                        # 截图记录当前状态
+                        try:
+                            page.screenshot(path=f"/tmp/outlook_captcha_done_{email}.png")
+                        except Exception:
+                            pass
+                        return False, f"CAPTCHA 已点击但页面未跳转到成功页（当前: {cur_url[:80]}）", email
+
         except Exception as e:
             return False, f"加载超时或触发机器人检测: {e}", email
 
