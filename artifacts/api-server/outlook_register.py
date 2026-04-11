@@ -714,34 +714,39 @@ class PatchrightController(BaseController):
             2. JS 选择器点击（适用于 Frame 对象）
             3. 键盘 Tab+Enter 导航
             """
-            # 方法0：JS 强制启用按钮后点击（绕过 aria-disabled）
-            if hasattr(frame_or_locator, 'evaluate'):
-                try:
-                    result = frame_or_locator.evaluate("""
-                        () => {
-                            const sel = '[aria-label="可访问性挑战"],[aria-label="Accessible challenge"],[aria-label="Audio challenge"]';
-                            const btn = document.querySelector(sel);
-                            if (!btn) return {found: false};
-                            const wasDisabled = btn.getAttribute('aria-disabled');
-                            // 强制启用：移除 disabled 属性，设置 opacity
-                            btn.removeAttribute('aria-disabled');
-                            btn.removeAttribute('disabled');
-                            btn.style.opacity = '1';
-                            btn.style.pointerEvents = 'auto';
-                            // 用鼠标事件模拟点击（比 .click() 更完整）
-                            ['mousedown','mouseup','click'].forEach(evName => {
-                                btn.dispatchEvent(new MouseEvent(evName, {
-                                    bubbles: true, cancelable: true, view: window
-                                }));
-                            });
-                            return {found: true, wasDisabled};
-                        }
-                    """)
-                    if result and result.get('found'):
-                        print(f"[captcha] ✅ JS强制启用并点击（原disabled={result.get('wasDisabled')}）", flush=True)
-                        return True
-                except Exception as e:
-                    print(f"[captcha] JS强制点击异常: {e}", flush=True)
+            # 方法0：用真实鼠标坐标点击（跨 frame 边界有效）
+            # JS dispatchEvent 不会跨 frame 冒泡，必须用 page 级别的鼠标点击
+            if hasattr(frame_or_locator, 'locator'):
+                for lbl in ACCESSIBILITY_LABELS:
+                    try:
+                        loc = frame_or_locator.locator(f'[aria-label="{lbl}"]')
+                        if loc.count() == 0:
+                            continue
+                        # 先强制启用（移除 disabled 属性）
+                        frame_or_locator.evaluate(f"""
+                            () => {{
+                                const btn = document.querySelector('[aria-label="{lbl}"]');
+                                if (btn) {{
+                                    btn.removeAttribute('aria-disabled');
+                                    btn.removeAttribute('disabled');
+                                    btn.style.opacity = '1';
+                                    btn.style.pointerEvents = 'auto';
+                                }}
+                            }}
+                        """)
+                        # 获取按钮在 page 中的绝对坐标
+                        box = loc.bounding_box(timeout=5000)
+                        if box:
+                            cx = box['x'] + box['width'] / 2
+                            cy = box['y'] + box['height'] / 2
+                            # 用 page 级别鼠标点击（能跨 frame 边界触发父 frame 事件）
+                            page.mouse.move(cx - 5, cy - 3)
+                            page.wait_for_timeout(200)
+                            page.mouse.click(cx, cy)
+                            print(f"[captcha] ✅ 真实鼠标点击 [{lbl}] 坐标({cx:.0f},{cy:.0f})", flush=True)
+                            return True
+                    except Exception as e:
+                        print(f"[captcha] 鼠标点击失败[{lbl}]: {e}", flush=True)
 
             # 方法1：aria-label 精确匹配
             for lbl in ACCESSIBILITY_LABELS:
@@ -864,10 +869,13 @@ class PatchrightController(BaseController):
                     has_audio = bool(detail.get('audios'))
                     has_input = detail.get('inputs', 0) > 0
                     body_len  = detail.get('bodyLen', 0)
-                    if 'hsprotect.net' in url or has_audio or has_input or detail.get('playBtns'):
+                    is_hsp = 'hsprotect.net' in url
+                    if is_hsp or has_audio or has_input or detail.get('playBtns'):
                         print(f"[captcha]   🔍 frame[{_fi}] {url}", flush=True)
                         print(f"[captcha]      audios={detail.get('audios')} inputs={detail.get('inputs')} playBtns={detail.get('playBtns')} bodyLen={body_len}", flush=True)
-                        print(f"[captcha]      body: {detail.get('bodySnippet','')[:400]}", flush=True)
+                        # 对 hsprotect 的 frame 打印更长的 body（找出音频挑战结构）
+                        snippet_len = 800 if is_hsp else 400
+                        print(f"[captcha]      body: {detail.get('bodySnippet','')[:snippet_len]}", flush=True)
                     else:
                         print(f"[captcha]   frame[{_fi}] {url}: bodyLen={body_len}", flush=True)
                 except Exception as _fe:
