@@ -10,24 +10,26 @@ import InfoGenerator from "@/pages/InfoGenerator";
 import FreeEmail from "@/pages/FreeEmail";
 import MachineReset from "@/pages/MachineReset";
 import Fingerprint from "@/pages/Fingerprint";
+import OutlookManager from "@/pages/OutlookManager";
 
 const queryClient = new QueryClient();
 
-type Tab = "home" | "email" | "bulk-email" | "free-email" | "keycheck" | "tokencheck" | "ip" | "info" | "machine-reset" | "fingerprint" | "team-register" | "openai-pool";
+type Tab = "home" | "email" | "bulk-email" | "free-email" | "keycheck" | "tokencheck" | "ip" | "info" | "machine-reset" | "fingerprint" | "outlook" | "team-register" | "openai-pool";
 
 const tabs: { id: Tab; label: string; icon: string; badge?: string; group?: string }[] = [
-  { id: "home",          label: "工具导航",     icon: "🗂️" },
-  { id: "email",         label: "临时邮箱",     icon: "📬", badge: "真实可用" },
-  { id: "bulk-email",    label: "批量邮箱",     icon: "📮", badge: "真实可用" },
-  { id: "free-email",    label: "免费身份邮箱",  icon: "🆓", badge: "无需Key" },
-  { id: "keycheck",      label: "Key 验证",     icon: "🔑", badge: "真实可用" },
-  { id: "tokencheck",    label: "批量检测",     icon: "⚡", badge: "真实可用" },
-  { id: "ip",            label: "IP 查询",      icon: "🌐", badge: "真实可用" },
-  { id: "info",          label: "信息生成",     icon: "👤", badge: "真实可用" },
-  { id: "machine-reset", label: "机器ID重置",   icon: "🔄", badge: "Cursor" },
-  { id: "fingerprint",   label: "浏览器指纹",   icon: "🎭", badge: "新增" },
-  { id: "team-register", label: "Team 注册面板", icon: "🤖", badge: "Python 原版" },
-  { id: "openai-pool",   label: "账号池编排器",  icon: "🏊", badge: "Python 原版" },
+  { id: "home",          label: "工具导航",       icon: "🗂️" },
+  { id: "email",         label: "临时邮箱",       icon: "📬", badge: "真实可用" },
+  { id: "bulk-email",    label: "批量邮箱",       icon: "📮", badge: "MailTM" },
+  { id: "free-email",    label: "免费身份邮箱",    icon: "🆓", badge: "无需Key" },
+  { id: "outlook",       label: "Outlook 工作流", icon: "📧", badge: "OAuth2" },
+  { id: "keycheck",      label: "Key 验证",       icon: "🔑", badge: "真实可用" },
+  { id: "tokencheck",    label: "批量检测",       icon: "⚡", badge: "真实可用" },
+  { id: "ip",            label: "IP 查询",        icon: "🌐", badge: "真实可用" },
+  { id: "info",          label: "信息生成",       icon: "👤", badge: "真实可用" },
+  { id: "machine-reset", label: "机器ID重置",     icon: "🔄", badge: "Cursor" },
+  { id: "fingerprint",   label: "浏览器指纹",     icon: "🎭", badge: "新增" },
+  { id: "team-register", label: "Team 注册面板",  icon: "🤖", badge: "Python 原版" },
+  { id: "openai-pool",   label: "账号池编排器",    icon: "🏊", badge: "Python 原版" },
 ];
 
 function App() {
@@ -108,6 +110,7 @@ function App() {
             {tab === "info" && <InfoGenerator />}
             {tab === "machine-reset" && <MachineReset />}
             {tab === "fingerprint" && <Fingerprint />}
+            {tab === "outlook" && <OutlookManager />}
           </main>
         )}
 

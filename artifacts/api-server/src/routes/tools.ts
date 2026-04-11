@@ -518,6 +518,109 @@ router.get("/tools/fingerprint/generate", (req, res) => {
   res.json({ success: true, count, profiles });
 });
 
+// ── 微软 OAuth2 / Graph API ───────────────────────────────
+router.post("/tools/outlook/refresh-token", async (req, res) => {
+  const { clientId, refreshToken, tenantId } = req.body as {
+    clientId?: string; refreshToken?: string; tenantId?: string;
+  };
+  if (!clientId || !refreshToken) {
+    res.status(400).json({ success: false, error: "clientId 和 refreshToken 不能为空" });
+    return;
+  }
+  const tid = tenantId || "common";
+  try {
+    const r = await fetch(`https://login.microsoftonline.com/${tid}/oauth2/v2.0/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: clientId,
+        refresh_token: refreshToken,
+        scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access",
+      }).toString(),
+    });
+    const data = await r.json() as {
+      access_token?: string; refresh_token?: string; expires_in?: number;
+      token_type?: string; error?: string; error_description?: string;
+    };
+    if (!r.ok || !data.access_token) {
+      res.json({ success: false, error: data.error_description ?? data.error ?? "OAuth2 失败" });
+      return;
+    }
+    res.json({
+      success: true,
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? refreshToken,
+      expiresIn: data.expires_in,
+      tokenType: data.token_type,
+    });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+router.post("/tools/outlook/messages", async (req, res) => {
+  const { accessToken, folder, top, search } = req.body as {
+    accessToken?: string; folder?: string; top?: number; search?: string;
+  };
+  if (!accessToken) {
+    res.status(400).json({ success: false, error: "accessToken 不能为空" });
+    return;
+  }
+  const mailFolder = folder || "inbox";
+  const limit = Math.min(50, Math.max(1, top ?? 20));
+  let url = `https://graph.microsoft.com/v1.0/me/mailFolders/${mailFolder}/messages?$top=${limit}&$select=id,subject,from,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc`;
+  if (search) url += `&$search="${encodeURIComponent(search)}"`;
+  try {
+    const r = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    });
+    const data = await r.json() as {
+      value?: Array<{
+        id: string; subject: string;
+        from: { emailAddress: { name: string; address: string } };
+        receivedDateTime: string; bodyPreview: string; isRead: boolean;
+      }>;
+      error?: { message: string; code: string };
+    };
+    if (!r.ok) {
+      res.json({ success: false, error: data.error?.message ?? "获取邮件失败" });
+      return;
+    }
+    const messages = (data.value ?? []).map((m) => ({
+      id: m.id,
+      subject: m.subject || "(无主题)",
+      from: m.from?.emailAddress?.address ?? "",
+      fromName: m.from?.emailAddress?.name ?? "",
+      receivedAt: m.receivedDateTime,
+      preview: m.bodyPreview,
+      isRead: m.isRead,
+    }));
+    res.json({ success: true, messages, count: messages.length });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+router.get("/tools/outlook/profile", async (req, res) => {
+  const token = req.headers["x-access-token"] as string;
+  if (!token) { res.status(400).json({ success: false, error: "缺少 x-access-token" }); return; }
+  try {
+    const r = await fetch("https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName,accountEnabled", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await r.json() as {
+      id?: string; displayName?: string; mail?: string;
+      userPrincipalName?: string; accountEnabled?: boolean;
+      error?: { message: string };
+    };
+    if (!r.ok) { res.json({ success: false, error: data.error?.message ?? "获取用户信息失败" }); return; }
+    res.json({ success: true, profile: data });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
 router.get("/tools/ip-check", async (req, res) => {
   try {
     const r = await fetch("https://ipapi.co/json/");
