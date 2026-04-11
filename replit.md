@@ -46,3 +46,31 @@ Shared backend API server.
 UI component sandbox.
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
+
+## Outlook Batch Registration — Architecture
+
+### How it works
+1. Frontend (`FullWorkflow.tsx`) POSTs to `POST /api/tools/outlook/register`
+2. Node.js spawns `artifacts/api-server/outlook_register.py` as a subprocess
+3. Python uses **patchright** (patched Chromium) + SOCKS5 relay to register accounts
+4. Node.js polls Python's stdout for JSON log lines and streams them to the frontend every 2s
+5. On completion, Node.js saves successful accounts to PostgreSQL `accounts` table
+
+### CAPTCHA bypass (FREE, no paid service needed)
+- Microsoft FunCaptcha shows an **accessibility icon** (wheelchair ♿) during registration
+- We click it via `locator.click(force=True)` then `dispatch_event("click")` as fallback
+- This bypasses the visual press-and-hold challenge entirely
+- Works in **headless mode** — no display required
+- Achieved via patchright's CDP iframe cross-origin interaction
+- **Key fix** (Apr 2026): replaced `bounding_box()` + `page.mouse.click()` (which returns None in headless) with `locator.click()` + `dispatch_event()` fallback
+
+### Proxy pool
+- 100 quarkip residential US proxies (sessid 177593745410000–177593745410099)
+- `socks5_relay.py` creates a local unauthenticated SOCKS5 relay because Chromium can't use authenticated SOCKS5 directly
+- Each registration gets a fresh relay on an ephemeral port
+
+### Key files
+- `artifacts/api-server/outlook_register.py` — main Python registration script with PatchrightController
+- `artifacts/api-server/socks5_relay.py` — SOCKS5 relay for authenticated proxies
+- `artifacts/api-server/src/routes/tools.ts` — Node.js route spawning Python + streaming logs + DB save
+- `artifacts/ai-toolkit/src/pages/FullWorkflow.tsx` — UI for registration with live log streaming

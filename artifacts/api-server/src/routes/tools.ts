@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import { createHash, randomBytes, randomUUID } from "crypto";
+import { execute } from "../db.js";
 
 const router: IRouter = Router();
 
@@ -885,6 +886,26 @@ router.post("/tools/outlook/register", async (req, res) => {
     } catch {}
 
     const okCount = job.accounts.length;
+
+    // ── 持久化到数据库 ──────────────────────────────────────────────────────
+    if (okCount > 0) {
+      (async () => {
+        for (const acc of job.accounts) {
+          try {
+            await execute(
+              `INSERT INTO accounts (platform, email, password, status)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT DO NOTHING`,
+              ["outlook", acc.email, acc.password, "active"],
+            );
+          } catch (dbErr) {
+            job.logs.push({ type: "warn", message: `⚠ DB 保存失败(${acc.email}): ${dbErr}` });
+          }
+        }
+        job.logs.push({ type: "log", message: `📦 已保存 ${okCount} 个账号到数据库` });
+      })();
+    }
+
     job.logs.push({
       type: "done",
       message: `注册任务完成 · 成功 ${okCount} 个 / 共 ${n} 个` + (okCount > 0 ? ` ✅` : ` (需要住宅代理才能通过 CAPTCHA)`),

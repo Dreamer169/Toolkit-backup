@@ -384,31 +384,95 @@ class PatchrightController(BaseController):
         return self._solve_with_service(page, blob_container or [])
 
     def _try_accessibility_challenge(self, page) -> bool:
-        """点击无障碍挑战按钮（原版逻辑）"""
+        """
+        点击无障碍挑战按钮（轮椅图标）绕过视觉 CAPTCHA。
+        修复：用 locator.click() 替代 bounding_box()+page.mouse.click()，
+        避免无头模式下跨域 iframe 坐标返回 None 的问题。
+        兜底：JS 注入点击。
+        """
+        # 等 CAPTCHA iframe 出现
+        try:
+            page.wait_for_selector('iframe[title="验证质询"]', timeout=12000)
+        except Exception:
+            # 没有 CAPTCHA，也许已通过
+            return True
+
         frame1 = page.frame_locator('iframe[title="验证质询"]')
-        frame2 = frame1.frame_locator('iframe[style*="display: block"]')
 
-        for _ in range(self.max_retries + 1):
-            page.wait_for_timeout(200)
+        # 内层 iframe 候选选择器（微软可能改过 style 格式）
+        INNER_SELECTORS = [
+            'iframe[style*="display: block"]',
+            'iframe[style*="display:block"]',
+            'iframe[tabindex="0"]',
+            'iframe:first-child',
+        ]
 
-            loc = frame2.locator('[aria-label="可访问性挑战"]')
-            box = loc.bounding_box()
-            if not box:
-                return False
-            x = box["x"] + box["width"] / 2 + random.randint(-10, 10)
-            y = box["y"] + box["height"] / 2 + random.randint(-10, 10)
-            page.mouse.click(x, y)
+        def _find_frame2():
+            """尝试多个内层 iframe 选择器"""
+            for sel in INNER_SELECTORS:
+                try:
+                    f2 = frame1.frame_locator(sel)
+                    # 检查无障碍按钮是否存在
+                    cnt = f2.locator('[aria-label="可访问性挑战"]').count()
+                    if cnt > 0:
+                        return f2
+                except Exception:
+                    pass
+            # 最后兜底：直接从 page.frames() 里找
+            for fr in page.frames():
+                try:
+                    if fr.locator('[aria-label="可访问性挑战"]').count() > 0:
+                        return fr
+                except Exception:
+                    pass
+            return None
 
-            loc2 = frame2.locator('[aria-label="再次按下"]')
-            box2 = loc2.bounding_box()
-            if not box2:
-                return False
-            x2 = box2["x"] + box2["width"] / 2 + random.randint(-20, 20)
-            y2 = box2["y"] + box2["height"] / 2 + random.randint(-13, 13)
-            page.mouse.click(x2, y2)
-
+        def _click_by_locator_or_js(frame_or_locator, aria_label) -> bool:
+            """尝试 locator.click() → JS dispatch_event"""
             try:
-                page.locator(".draw").wait_for(state="detached")
+                if hasattr(frame_or_locator, 'locator'):
+                    loc = frame_or_locator.locator(f'[aria-label="{aria_label}"]')
+                else:
+                    loc = frame_or_locator
+                loc.wait_for(state="attached", timeout=3000)
+                loc.scroll_into_view_if_needed(timeout=3000)
+                loc.click(timeout=5000, force=True)
+                return True
+            except Exception as e:
+                print(f"[captcha] click() 失败({e})，尝试 dispatch_event…", flush=True)
+                try:
+                    loc.dispatch_event("click", timeout=3000)
+                    return True
+                except Exception as e2:
+                    print(f"[captcha] dispatch_event 也失败({e2})", flush=True)
+                    return False
+
+        for attempt in range(self.max_retries + 1):
+            page.wait_for_timeout(800)
+            print(f"[captcha] 无障碍挑战第 {attempt+1} 次尝试…", flush=True)
+
+            # 定位内层 frame
+            frame2 = _find_frame2()
+            if frame2 is None:
+                # 直接在 frame1 里找
+                frame2 = frame1
+
+            # ── 点击无障碍按钮（轮椅图标）────────────────────────────────────
+            clicked_accessibility = _click_by_locator_or_js(frame2, "可访问性挑战")
+            if not clicked_accessibility:
+                print("[captcha] 无障碍按钮点击失败，放弃本次", flush=True)
+                return False
+
+            print("[captcha] ✅ 无障碍按钮点击成功", flush=True)
+            page.wait_for_timeout(800)
+
+            # ── 点击「再次按下」按钮 ──────────────────────────────────────────
+            _click_by_locator_or_js(frame2, "再次按下")
+            print("[captcha] 已点击再次按下（忽略失败）", flush=True)
+
+            # 等待 .draw 动画消失，判断是否通过
+            try:
+                page.locator(".draw").wait_for(state="detached", timeout=10000)
                 try:
                     page.locator('[role="status"][aria-label="正在加载..."]').wait_for(timeout=5000)
                     page.wait_for_timeout(8000)
@@ -416,15 +480,22 @@ class PatchrightController(BaseController):
                             or page.get_by_text("此站点正在维护，暂时无法使用，请稍后重试。").count()):
                         return False
                     if frame2.locator('[aria-label="可访问性挑战"]').count() > 0:
+                        print("[captcha] ⚠️ 无障碍挑战需要重试", flush=True)
                         continue
                     break
                 except Exception:
                     if page.get_by_text("取消").count() > 0:
+                        print("[captcha] ✅ 出现取消按钮，认为已通过", flush=True)
                         break
-                    frame1.get_by_text("请再试一次").wait_for(timeout=15000)
-                    continue
+                    try:
+                        frame1.get_by_text("请再试一次").wait_for(timeout=15000)
+                        print("[captcha] ⚠️ 请再试一次，重试中…", flush=True)
+                        continue
+                    except Exception:
+                        break
             except Exception:
                 if page.get_by_text("取消").count() > 0:
+                    print("[captcha] ✅ 出现取消按钮，认为已通过", flush=True)
                     break
                 return False
         else:
