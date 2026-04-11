@@ -10,9 +10,9 @@ import InfoGenerator from "@/pages/InfoGenerator";
 
 const queryClient = new QueryClient();
 
-type Tab = "home" | "email" | "bulk-email" | "keycheck" | "tokencheck" | "ip" | "info";
+type Tab = "home" | "email" | "bulk-email" | "keycheck" | "tokencheck" | "ip" | "info" | "team-register" | "openai-pool";
 
-const tabs: { id: Tab; label: string; icon: string; badge?: string }[] = [
+const tabs: { id: Tab; label: string; icon: string; badge?: string; group?: string }[] = [
   { id: "home", label: "工具导航", icon: "🗂️" },
   { id: "email", label: "临时邮箱", icon: "📬", badge: "真实可用" },
   { id: "bulk-email", label: "批量邮箱", icon: "📮", badge: "真实可用" },
@@ -20,6 +20,8 @@ const tabs: { id: Tab; label: string; icon: string; badge?: string }[] = [
   { id: "tokencheck", label: "批量检测", icon: "⚡", badge: "真实可用" },
   { id: "ip", label: "IP 查询", icon: "🌐", badge: "真实可用" },
   { id: "info", label: "信息生成", icon: "👤", badge: "真实可用" },
+  { id: "team-register", label: "Team 注册面板", icon: "🤖", badge: "Python 原版" },
+  { id: "openai-pool", label: "账号池编排器", icon: "🏊", badge: "Python 原版" },
 ];
 
 function App() {
@@ -79,15 +81,26 @@ function App() {
           </div>
         </header>
 
-        <main className="max-w-7xl mx-auto px-4 py-8">
-          {tab === "home" && <Home />}
-          {tab === "email" && <TempEmail />}
-          {tab === "bulk-email" && <BulkEmail />}
-          {tab === "keycheck" && <KeyChecker />}
-          {tab === "tokencheck" && <TokenBatch />}
-          {tab === "ip" && <IpChecker />}
-          {tab === "info" && <InfoGenerator />}
-        </main>
+        {(tab === "team-register" || tab === "openai-pool") ? (
+          <div className="flex-1 flex flex-col" style={{ height: "calc(100vh - 120px)" }}>
+            <iframe
+              src={tab === "team-register" ? "/team-all-in-one/" : "/openai-pool/"}
+              className="w-full flex-1 border-0"
+              title={tab === "team-register" ? "ChatGPT Team 注册面板" : "OpenAI 账号池编排器"}
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            />
+          </div>
+        ) : (
+          <main className="max-w-7xl mx-auto px-4 py-8">
+            {tab === "home" && <Home />}
+            {tab === "email" && <TempEmail />}
+            {tab === "bulk-email" && <BulkEmail />}
+            {tab === "keycheck" && <KeyChecker />}
+            {tab === "tokencheck" && <TokenBatch />}
+            {tab === "ip" && <IpChecker />}
+            {tab === "info" && <InfoGenerator />}
+          </main>
+        )}
 
         <footer className="mt-8 border-t border-[#21262d]">
           <div className="max-w-7xl mx-auto px-4 py-6 text-center text-gray-600 text-xs">

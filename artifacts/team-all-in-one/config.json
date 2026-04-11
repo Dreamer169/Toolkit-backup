@@ -1,0 +1,24 @@
+{
+    "mail_provider": "gptmail",
+    "gptmail_base": "https://mail.chatgpt.org.uk",
+    "gptmail_api_key": "",
+    "npcmail_api_key": "",
+    "npcmail_domain": "git-hub.email",
+    "proxy": "",
+    "enable_oauth": true,
+    "oauth_issuer": "https://auth.openai.com",
+    "oauth_client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "SUB2API_URL": "",
+    "SUB2API_TOKEN": "",
+    "sub_api_key": "",
+    "sub_plan": "team",
+    "default_address": {
+        "street": "",
+        "city": "",
+        "state": "",
+        "zip": "",
+        "country": ""
+    },
+    "cards": [],
+    "teams": []
+}

@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ChatGPT 批量注册</title>
+<link rel="stylesheet" href="/static/mac_style.css?v=4">
+</head>
+<body>
+<div class="bg"></div>
+<header class="header">
+  <div class="header-brand"><h1>ChatGPT 批量注册</h1></div>
+  <div class="status-pill" id="statusPill"><div class="dot"></div><span id="statusTxt">系统就绪</span></div>
+</header>
+
+<div class="page">
+  <aside class="sidebar">
+    <div class="card">
+      <div class="card-head"><span class="title">邮箱设置</span></div>
+      <div class="card-body">
+        <div class="form-row"><label>Mail Provider</label><select id="cfgMailProvider" class="inp" onchange="toggleMailProviderFields()"><option value="gptmail">GPTMail</option><option value="npcmail">NPCmail</option></select></div>
+        <div class="mail-provider-fields" data-provider="gptmail">
+          <div class="form-row"><label>GPTMail Base URL</label><input id="cfgGptmailBase" class="inp"></div>
+          <div class="form-row"><label>GPTMail API Key</label><input id="cfgGptmailKey" class="inp" type="password"></div>
+        </div>
+        <div class="mail-provider-fields" data-provider="npcmail" style="display:none">
+          <div class="form-row"><label>NPCmail API Key</label><input id="cfgNpcmailKey" class="inp" type="password"></div>
+          <div class="form-row">
+            <label>NPCmail 域名</label>
+            <select id="cfgNpcmailDomain" class="inp">
+              <option value="">自动分配</option>
+              <option value="ghukr.cn">ghukr.cn</option>
+              <option value="880333.xyz">880333.xyz</option>
+              <option value="880070.xyz">880070.xyz</option>
+              <option value="git-hub.email">git-hub.email</option>
+              <option value="hccc.edu.kg">hccc.edu.kg</option>
+              <option value="xphdfs.me">xphdfs.me</option>
+              <option value="kiroxubei.tech">kiroxubei.tech</option>
+              <option value="zhurunqi.love">zhurunqi.love</option>
+              <option value="geminikey.app">geminikey.app</option>
+              <option value="geminikey.email">geminikey.email</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="title">Team 管理 <span id="teamCnt">0 个</span></span></div>
+      <div class="card-body">
+        <div id="teamList"></div>
+        <button class="btn btn-ghost" style="width:100%" onclick="addTeam()">添加 Team</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="title">Team 母号注册</span></div>
+      <div class="card-body">
+        <div class="form-row"><label>订阅 API Key</label><input id="cfgSubApiKey" class="inp" type="password"></div>
+        <div class="form-row"><label>订阅计划</label><select id="subPlan" class="inp"><option value="team">Team</option><option value="plus">Plus</option></select></div>
+        <div id="balanceDisplay" style="font-size:.78rem;color:var(--green);margin-bottom:8px"></div>
+        <button class="btn btn-ghost" style="width:100%;margin-bottom:10px" onclick="checkBalance()">查询余额</button>
+
+        <div class="form-row"><label>默认街道</label><input id="defStreet" class="inp"></div>
+        <div style="display:flex;gap:10px">
+          <div class="form-row" style="flex:1"><label>城市</label><input id="defCity" class="inp"></div>
+          <div class="form-row" style="flex:1"><label>州 / 省</label><input id="defState" class="inp"></div>
+        </div>
+        <div style="display:flex;gap:10px">
+          <div class="form-row" style="flex:1"><label>邮编</label><input id="defZip" class="inp"></div>
+          <div class="form-row" style="flex:1"><label>国家</label><input id="defCountry" class="inp"></div>
+        </div>
+
+        <div style="margin-top:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><label>卡列表</label><span id="cardCntInfo">0/0 张可用</span></div>
+          <div id="cardList"></div>
+          <button id="cardCollapseBtn" class="btn btn-ghost" style="width:100%;display:none;margin-top:6px" onclick="toggleCardListCollapse()"></button>
+          <button class="btn btn-ghost" style="width:100%;margin-top:6px" onclick="addCard()">添加卡</button>
+        </div>
+
+        <button class="btn btn-blue" style="width:100%;margin-top:10px" onclick="registerMaster()">注册 Team 母号</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="title">其他配置</span></div>
+      <div class="card-body">
+        <div class="form-row"><label>代理</label><input id="cfgProxy" class="inp"></div>
+        <div class="form-row"><label>OAuth Issuer</label><input id="cfgOauthIssuer" class="inp"></div>
+        <div class="form-row"><label>OAuth Client ID</label><input id="cfgOauthClient" class="inp"></div>
+        <div class="toggle-wrap"><span class="label">启用 OAuth</span><label class="toggle"><input type="checkbox" id="cfgOauthEnable" checked><div class="track"></div></label></div>
+        <div class="form-row"><label>SUB2API URL</label><input id="cfgSub2Url" class="inp"></div>
+        <div class="form-row"><label>SUB2API Token</label><input id="cfgSub2Token" class="inp" type="password"></div>
+      </div>
+    </div>
+
+    <button class="btn btn-blue" style="width:100%" onclick="saveConfig()">保存所有配置</button>
+  </aside>
+
+  <main class="main">
+    <div class="card" style="padding:18px 20px">
+      <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+        <div class="form-row" style="width:120px"><label>注册数量</label><input id="regCount" class="inp" type="number" value="1" min="1"></div>
+        <div class="form-row" style="width:120px"><label>并发线程</label><input id="regWorkers" class="inp" type="number" value="1" min="1"></div>
+        <div style="flex:1"></div>
+        <button class="btn btn-green" id="btnStart" onclick="startTask()">开始注册</button>
+        <button class="btn btn-red" id="btnStop" style="display:none" onclick="stopTask()">停止任务</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="title">实时日志</span><button class="icon-btn" onclick="clearLog()">清空</button></div>
+      <div class="terminal" id="logArea"><div class="log">System initialized. Waiting for task...</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="title">已注册账号库</span><button class="icon-btn" onclick="loadAccounts()">刷新</button></div>
+      <div class="toolbar">
+        <button class="btn btn-ghost" onclick="exportOAuth('all','all')">导出全部</button>
+        <button class="btn btn-ghost" onclick="exportOAuth('selected','all')">导出选中</button>
+        <div class="toolbar-spacer"></div>
+        <button class="btn btn-ghost-danger" onclick="deleteAccounts('selected')">删除选中</button>
+        <button class="btn btn-red" onclick="deleteAccounts('all')">清空全部</button>
+      </div>
+      <div class="tbl-wrap" style="margin-top:12px">
+        <table>
+          <thead><tr><th style="width:36px"><input type="checkbox" class="chk" id="selAll" onchange="toggleAll()"></th><th>#</th><th>邮箱</th><th>密码</th><th>OAuth</th></tr></thead>
+          <tbody id="accBody"><tr><td colspan="5" class="empty">正在加载...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<script>
+let sseSource = null;
+let accs = [];
+let cardListCollapsed = false;
+const CARD_AUTO_COLLAPSE_THRESHOLD = 6;
+
+const byId = id => document.getElementById(id);
+const g = id => byId(id).value;
+const v = (id, val) => { byId(id).value = val; };
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const escHTML = s => { const el = document.createElement('span'); el.textContent = s; return el.innerHTML; };
+
+function toast(msg, type = 'ok') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span class="toast-ico">${type === 'ok' ? '✓' : '✕'}</span><span>${msg}</span>`;
+  byId('toasts').appendChild(el);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 280); }, 3000);
+}
+
+function toggleMailProviderFields() {
+  const provider = g('cfgMailProvider') || 'gptmail';
+  document.querySelectorAll('.mail-provider-fields').forEach(el => {
+    el.style.display = el.dataset.provider === provider ? '' : 'none';
+  });
+}
+
+async function loadConfig() {
+  try {
+    const cfg = await fetch('/api/config').then(r => r.json());
+    byId('cfgMailProvider').value = cfg.mail_provider || 'gptmail';
+    v('cfgGptmailBase', cfg.gptmail_base || 'https://mail.chatgpt.org.uk');
+    v('cfgGptmailKey', cfg.gptmail_api_key || 'gpt-test');
+    v('cfgNpcmailKey', cfg.npcmail_api_key || cfg.cmail_api_key || '');
+    v('cfgNpcmailDomain', cfg.npcmail_domain || cfg.cmail_domain || '');
+    v('cfgProxy', cfg.proxy || '');
+    byId('cfgOauthEnable').checked = cfg.enable_oauth !== false;
+    v('cfgOauthIssuer', cfg.oauth_issuer || 'https://auth.openai.com');
+    v('cfgOauthClient', cfg.oauth_client_id || 'app_EMoamEEZ73f0CkXaXp7hrann');
+    v('cfgSub2Url', cfg.SUB2API_URL || '');
+    v('cfgSub2Token', cfg.SUB2API_TOKEN || '');
+    v('cfgSubApiKey', cfg.sub_api_key || '');
+    if (cfg.sub_plan) byId('subPlan').value = cfg.sub_plan;
+    v('defStreet', cfg.default_address?.street || '');
+    v('defCity', cfg.default_address?.city || '');
+    v('defState', cfg.default_address?.state || '');
+    v('defZip', cfg.default_address?.zip || '');
+    v('defCountry', cfg.default_address?.country || '');
+    byId('cardList').innerHTML = '';
+    byId('cardCollapseBtn').dataset.touched = '';
+    cardListCollapsed = false;
+    (cfg.cards || []).forEach(addCard);
+    byId('teamList').innerHTML = '';
+    (cfg.teams || []).forEach(addTeam);
+    refreshTeamCnt();
+    refreshCardCnt();
+    toggleMailProviderFields();
+  } catch {
+    toast('加载配置失败', 'err');
+  }
+}
+
+function collectConfig() {
+  const teams = [...document.querySelectorAll('.team-card')].map(card => ({
+    name: card.querySelector('.t-name').value,
+    account_id: card.querySelector('.t-accid').value,
+    auth_token: card.querySelector('.t-auth').value,
+    session_token: card.querySelector('.t-sess').value,
+    max_invites: parseInt(card.querySelector('.t-max').value, 10) || 4,
+  }));
+  const cards = [...document.querySelectorAll('.sub-card-item')].map(card => {
+    const useCustom = card.querySelector('.c-custom-addr').checked;
+    const item = {
+      number: card.querySelector('.c-number').value,
+      expiry: card.querySelector('.c-expiry').value,
+      cvv: card.querySelector('.c-cvv').value,
+      used: card.querySelector('.c-used').value === '1',
+    };
+    if (useCustom) {
+      item.address = {
+        street: card.querySelector('.c-street').value,
+        city: card.querySelector('.c-city').value,
+        state: card.querySelector('.c-state').value,
+        zip: card.querySelector('.c-zip').value,
+        country: card.querySelector('.c-country').value,
+      };
+    }
+    return item;
+  });
+  return {
+    mail_provider: g('cfgMailProvider'),
+    gptmail_base: g('cfgGptmailBase'),
+    gptmail_api_key: g('cfgGptmailKey'),
+    npcmail_api_key: g('cfgNpcmailKey'),
+    npcmail_domain: g('cfgNpcmailDomain'),
+    proxy: g('cfgProxy'),
+    enable_oauth: byId('cfgOauthEnable').checked,
+    oauth_issuer: g('cfgOauthIssuer'),
+    oauth_client_id: g('cfgOauthClient'),
+    SUB2API_URL: g('cfgSub2Url'),
+    SUB2API_TOKEN: g('cfgSub2Token'),
+    sub_api_key: g('cfgSubApiKey'),
+    sub_plan: g('subPlan'),
+    default_address: { street: g('defStreet'), city: g('defCity'), state: g('defState'), zip: g('defZip'), country: g('defCountry') },
+    cards,
+    teams,
+  };
+}
+
+async function saveConfig() {
+  const res = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) });
+  const data = await res.json();
+  toast(data.ok ? '配置已保存' : '保存失败', data.ok ? 'ok' : 'err');
+}
+
+function addTeam(data = {}) {
+  const idx = Date.now() + Math.random();
+  const el = document.createElement('div');
+  el.className = 'team-card';
+  el.id = `tc_${idx}`;
+  el.innerHTML = `
+    <div class="team-card-top"><span class="team-lbl">TEAM #${document.querySelectorAll('.team-card').length + 1}</span><button class="icon-btn danger" onclick="document.getElementById('tc_${idx}').remove();refreshTeamCnt()">删除</button></div>
+    <div class="form-row"><label>Team 名称</label><input class="inp t-name" value="${esc(data.name || '')}"></div>
+    <div class="form-row"><label>Workspace ID</label><input class="inp t-accid" value="${esc(data.account_id || '')}"></div>
+    <div class="form-row"><label>Auth Token</label><textarea class="inp t-auth" rows="3">${esc(data.auth_token || '')}</textarea></div>
+    <div class="form-row"><label>Session Token</label><textarea class="inp t-sess" rows="3">${esc(data.session_token || '')}</textarea></div>
+    <div class="form-row"><label>最大邀请数</label><input class="inp t-max" type="number" min="1" value="${data.max_invites || 4}"></div>`;
+  byId('teamList').appendChild(el);
+  refreshTeamCnt();
+}
+
+function refreshTeamCnt() {
+  byId('teamCnt').textContent = `${document.querySelectorAll('.team-card').length} 个`;
+}
+
+async function loadAccounts() {
+  accs = await fetch('/api/accounts').then(r => r.json());
+  const body = byId('accBody');
+  if (!accs.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">暂无注册账号</td></tr>';
+    return;
+  }
+  body.innerHTML = accs.map((a, i) => `<tr><td><input type="checkbox" class="chk acc-chk" data-idx="${a.index}"></td><td>${i + 1}</td><td>${escHTML(a.email)}</td><td>••••••••</td><td>${escHTML(a.oauth_status || '-')}</td></tr>`).join('');
+}
+
+function toggleAll() {
+  const checked = byId('selAll').checked;
+  document.querySelectorAll('.acc-chk').forEach(cb => { cb.checked = checked; });
+}
+
+function selectedIdxs() {
+  return [...document.querySelectorAll('.acc-chk:checked')].map(cb => Number(cb.dataset.idx));
+}
+
+async function deleteAccounts(mode) {
+  if (mode === 'all' && !confirm('确认清空全部账号记录？')) return;
+  const indices = mode === 'selected' ? selectedIdxs() : [];
+  if (mode === 'selected' && !indices.length) return toast('请先勾选账号', 'err');
+  const data = await fetch('/api/accounts', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, indices }) }).then(r => r.json());
+  toast(`已删除 ${data.deleted} 个账号`);
+  byId('selAll').checked = false;
+  loadAccounts();
+}
+
+async function exportOAuth(mode, type) {
+  const indices = mode === 'selected' ? selectedIdxs() : [];
+  if (mode === 'selected' && !indices.length) return toast('请先勾选账号', 'err');
+  const res = await fetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, type, indices }) });
+  if (!res.ok) return toast('导出失败', 'err');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = `codex_export_${Date.now()}.zip`;
+  a.click();
+}
+
+function setRunning(running) {
+  byId('statusPill').className = running ? 'status-pill running' : 'status-pill';
+  byId('statusTxt').textContent = running ? '注册进行中' : '系统就绪';
+  byId('btnStart').style.display = running ? 'none' : '';
+  byId('btnStop').style.display = running ? '' : 'none';
+  if (!running) { loadAccounts(); loadConfig(); }
+}
+
+async function startTask() {
+  await saveConfig();
+  const res = await fetch('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count: Number(g('regCount')) || 1, workers: Number(g('regWorkers')) || 1, proxy: g('cfgProxy') }) });
+  const data = await res.json();
+  if (!data.ok) return toast(data.error || '启动失败', 'err');
+  clearLog();
+  setRunning(true);
+  startSSE();
+}
+
+async function stopTask() {
+  await fetch('/api/stop', { method: 'POST' });
+  toast('已发送停止信号');
+}
+
+function clearLog() { byId('logArea').innerHTML = ''; }
+
+function appendLog(text) {
+  const line = document.createElement('div');
+  line.className = 'log';
+  line.textContent = text;
+  byId('logArea').appendChild(line);
+  byId('logArea').scrollTop = byId('logArea').scrollHeight;
+}
+
+function startSSE() {
+  if (sseSource) sseSource.close();
+  sseSource = new EventSource('/api/logs');
+  sseSource.onmessage = event => {
+    if (event.data === '__TASK_DONE__') {
+      setRunning(false);
+      sseSource.close();
+      sseSource = null;
+      return;
+    }
+    appendLog(event.data);
+  };
+}
+
+async function checkBalance() {
+  const apiKey = g('cfgSubApiKey');
+  if (!apiKey) return toast('请填写 API Key', 'err');
+  const res = await fetch('/api/sub-balance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: apiKey }) });
+  const data = await res.json();
+  byId('balanceDisplay').textContent = data.ok ? JSON.stringify(data.data) : `查询失败: ${data.error || '未知错误'}`;
+}
+
+function addCard(data = {}) {
+  const idx = Date.now() + Math.random();
+  const isUsed = Boolean(data.used);
+  const hasAddr = Boolean(data.address);
+  const el = document.createElement('div');
+  el.className = 'sub-card-item';
+  el.id = `sc_${idx}`;
+  el.innerHTML = `
+    <div class="team-card-top"><span class="team-lbl">CARD ****${esc((data.number || '').slice(-4) || '????')}</span><button class="icon-btn danger" onclick="document.getElementById('sc_${idx}').remove();refreshCardCnt()">删除</button></div>
+    <input type="hidden" class="c-used" value="${isUsed ? '1' : ''}">
+    <div class="form-row"><label>卡号</label><input class="inp c-number" value="${esc(data.number || '')}" ${isUsed ? 'disabled' : ''}></div>
+    <div style="display:flex;gap:10px"><div class="form-row" style="flex:1"><label>有效期</label><input class="inp c-expiry" value="${esc(data.expiry || '')}" ${isUsed ? 'disabled' : ''}></div><div class="form-row" style="flex:1"><label>CVV</label><input class="inp c-cvv" value="${esc(data.cvv || '')}" ${isUsed ? 'disabled' : ''}></div></div>
+    <div class="toggle-wrap"><span class="label">单独设置账单地址</span><label class="toggle"><input type="checkbox" class="c-custom-addr" ${hasAddr ? 'checked' : ''} onchange="toggleCardAddr(this)"><div class="track"></div></label></div>
+    <div class="c-addr-fields" style="${hasAddr ? '' : 'display:none'}">
+      <div class="form-row"><label>街道</label><input class="inp c-street" value="${esc(data.address?.street || '')}"></div>
+      <div style="display:flex;gap:10px"><div class="form-row" style="flex:1"><label>城市</label><input class="inp c-city" value="${esc(data.address?.city || '')}"></div><div class="form-row" style="flex:1"><label>州 / 省</label><input class="inp c-state" value="${esc(data.address?.state || '')}"></div></div>
+      <div style="display:flex;gap:10px"><div class="form-row" style="flex:1"><label>邮编</label><input class="inp c-zip" value="${esc(data.address?.zip || '')}"></div><div class="form-row" style="flex:1"><label>国家</label><input class="inp c-country" value="${esc(data.address?.country || '')}"></div></div>
+    </div>`;
+  byId('cardList').appendChild(el);
+  refreshCardCnt();
+}
+
+function toggleCardAddr(cb) {
+  cb.closest('.sub-card-item').querySelector('.c-addr-fields').style.display = cb.checked ? '' : 'none';
+}
+
+function refreshCardCnt() {
+  const items = [...document.querySelectorAll('.sub-card-item')];
+  const avail = items.filter(item => item.querySelector('.c-used').value !== '1').length;
+  byId('cardCntInfo').textContent = `${avail}/${items.length} 张可用`;
+  if (items.length <= CARD_AUTO_COLLAPSE_THRESHOLD) cardListCollapsed = false;
+  else if (!byId('cardCollapseBtn').dataset.touched) cardListCollapsed = true;
+  syncCardListCollapse();
+}
+
+function syncCardListCollapse() {
+  const items = [...document.querySelectorAll('.sub-card-item')];
+  const btn = byId('cardCollapseBtn');
+  if (items.length <= CARD_AUTO_COLLAPSE_THRESHOLD) {
+    btn.style.display = 'none';
+    btn.dataset.touched = '';
+    items.forEach(item => { item.style.display = ''; });
+    return;
+  }
+  btn.style.display = '';
+  btn.textContent = cardListCollapsed ? `展开剩余 ${items.length - CARD_AUTO_COLLAPSE_THRESHOLD} 张卡` : '收起多余卡片';
+  items.forEach((item, index) => { item.style.display = cardListCollapsed && index >= CARD_AUTO_COLLAPSE_THRESHOLD ? 'none' : ''; });
+}
+
+function toggleCardListCollapse() {
+  cardListCollapsed = !cardListCollapsed;
+  byId('cardCollapseBtn').dataset.touched = '1';
+  syncCardListCollapse();
+}
+
+async function registerMaster() {
+  const apiKey = g('cfgSubApiKey');
+  if (!apiKey) return toast('请填写 API Key', 'err');
+  const cards = [...document.querySelectorAll('.sub-card-item')].filter(item => item.querySelector('.c-used').value !== '1').map(item => {
+    const custom = item.querySelector('.c-custom-addr').checked;
+    return {
+      number: item.querySelector('.c-number').value.trim(),
+      expiry: item.querySelector('.c-expiry').value.trim(),
+      cvv: item.querySelector('.c-cvv').value.trim(),
+      street: custom ? item.querySelector('.c-street').value.trim() : g('defStreet'),
+      city: custom ? item.querySelector('.c-city').value.trim() : g('defCity'),
+      state: custom ? item.querySelector('.c-state').value.trim() : g('defState'),
+      zip: custom ? item.querySelector('.c-zip').value.trim() : g('defZip'),
+      country: custom ? item.querySelector('.c-country').value.trim() : g('defCountry'),
+    };
+  }).filter(item => item.number && item.expiry && item.cvv);
+  if (!cards.length) return toast('没有可用的卡，请先添加', 'err');
+  const next = cards[0];
+  if (!next.street || !next.city || !next.country) return toast('账单地址不完整', 'err');
+  await saveConfig();
+  const card = `${next.number} ${next.expiry} ${next.cvv} ${next.street}, ${next.city}, ${next.state}, ${next.zip}, ${next.country}`;
+  const res = await fetch('/api/register-master', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: apiKey, card, plan: g('subPlan'), proxy: g('cfgProxy'), card_number: next.number }) });
+  const data = await res.json();
+  if (!data.ok) return toast(data.error || '启动失败', 'err');
+  clearLog();
+  setRunning(true);
+  startSSE();
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  loadConfig();
+  loadAccounts();
+  fetch('/api/status').then(r => r.json()).then(data => { if (data.running) { setRunning(true); startSSE(); } });
+});
+</script>
+</body>
+</html>

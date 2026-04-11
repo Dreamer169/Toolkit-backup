@@ -1,6 +1,7 @@
 import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
+import { createProxyMiddleware } from "http-proxy-middleware";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
@@ -30,5 +31,33 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
+
+app.use(
+  "/team-all-in-one",
+  createProxyMiddleware({
+    target: "http://localhost:5000",
+    changeOrigin: true,
+    pathRewrite: { "^/team-all-in-one": "" },
+    on: {
+      error: (_err, _req, res) => {
+        (res as express.Response).status(502).send("ChatGPT 注册面板未启动，请稍后重试");
+      },
+    },
+  }),
+);
+
+app.use(
+  "/openai-pool",
+  createProxyMiddleware({
+    target: "http://localhost:8000",
+    changeOrigin: true,
+    pathRewrite: { "^/openai-pool": "" },
+    on: {
+      error: (_err, _req, res) => {
+        (res as express.Response).status(502).send("OpenAI 账号池编排器未启动，请稍后重试");
+      },
+    },
+  }),
+);
 
 export default app;
