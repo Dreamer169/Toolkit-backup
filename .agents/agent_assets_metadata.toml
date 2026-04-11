@@ -1,0 +1,26 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "bppcu9XwqjVWcQmVV4cHa"
+uri = "file://技术栈说明.txt"
+type = "text"
+title = "技术栈说明.txt"
+
+[[outputs]]
+id = "P87pV3P__whH-Z-fhAV-u"
+uri = "file://更新日志.txt"
+type = "text"
+title = "更新日志.txt"
+
+[[outputs]]
+id = "w-O48WT8b2D-dJJ050lwX"
+uri = "file://使用说明.txt"
+type = "text"
+title = "使用说明.txt"
+
+[[outputs]]
+id = "xzGXJhvFqsQ4y9F4CfIhb"
+uri = "file://注意事项.txt"
+type = "text"
+title = "注意事项.txt"
