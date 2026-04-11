@@ -1,12 +1,19 @@
 """
 Outlook/Hotmail 批量注册自动化脚本
-基于 patchright (增强版 Playwright，内置指纹伪装)
-参考: https://github.com/hrhcode/outlook-batch-manager
+精髓完全参考 https://github.com/hrhcode/outlook-batch-manager
+
+核心逻辑 (与原版一致):
+  - 入口: outlook.live.com/mail/0/?prompt=create_account
+  - 首先点击 '同意并继续' (中文 UI)
+  - 输入速度与 bot_protection_wait 成比例 (默认 11s)
+  - patchright 双 iframe CAPTCHA: 可访问性挑战按钮
+  - playwright CAPTCHA: Enter键 + hsprotect.net 流量监听
+  - Faker 生成真实人名
+  - 可选 OAuth2 刷新 Token
 
 用法:
-  python3 outlook_register.py --count 5 --proxy socks5://127.0.0.1:1080 --output accounts.txt
-
-注意: 在 Replit 无头环境中运行，已配置 headless=True + 指纹规避
+  python3 outlook_register.py --count 3 --proxy socks5://127.0.0.1:1080
+  python3 outlook_register.py --count 1 --engine playwright --headless false
 """
 
 import argparse
@@ -17,64 +24,21 @@ import secrets
 import string
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 
-# ─── 人名库 ──────────────────────────────────────────────────────────────────
-FIRST_NAMES = [
-    "James","John","Robert","Michael","William","David","Richard","Joseph","Thomas","Charles",
-    "Christopher","Daniel","Matthew","Anthony","Mark","Donald","Steven","Paul","Andrew","Joshua",
-    "Kenneth","Kevin","Brian","George","Timothy","Ronald","Edward","Jason","Jeffrey","Ryan",
-    "Jacob","Gary","Nicholas","Eric","Jonathan","Stephen","Larry","Justin","Scott","Brandon",
-    "Benjamin","Samuel","Frank","Alexander","Patrick","Jack","Dennis","Jerry","Tyler","Aaron",
-    "Mary","Patricia","Jennifer","Linda","Barbara","Elizabeth","Susan","Jessica","Sarah","Karen",
-    "Lisa","Nancy","Betty","Margaret","Sandra","Ashley","Dorothy","Kimberly","Emily","Donna",
-    "Michelle","Amanda","Melissa","Deborah","Stephanie","Rebecca","Sharon","Laura","Cynthia","Amy",
-    "Emma","Olivia","Noah","Liam","Ava","Sophia","Isabella","Mia","Charlotte","Amelia",
-    "Lucas","Ethan","Mason","Logan","Aiden","Jackson","Sebastian","Oliver","Elijah","Owen",
-]
-LAST_NAMES = [
-    "Smith","Johnson","Williams","Brown","Jones","Garcia","Miller","Davis","Rodriguez","Martinez",
-    "Hernandez","Lopez","Gonzalez","Wilson","Anderson","Thomas","Taylor","Moore","Jackson","Martin",
-    "Lee","Perez","Thompson","White","Harris","Sanchez","Clark","Ramirez","Lewis","Robinson",
-    "Walker","Young","Allen","King","Wright","Scott","Torres","Nguyen","Hill","Flores",
-    "Green","Adams","Nelson","Baker","Hall","Rivera","Campbell","Mitchell","Carter","Roberts",
-    "Turner","Phillips","Evans","Edwards","Collins","Stewart","Morris","Murphy","Cook","Rogers",
-    "Bennett","Gray","Hughes","Price","Patel","Parker","Butler","Barnes","Fisher","Henderson",
-    "Hacker","Dev","Code","Fox","Wolf","Stone","Drake","Blake","Chase","Quinn",
-]
+from faker import Faker
+
+fake = Faker("zh_CN")
+
+# ─── 配置 ─────────────────────────────────────────────────────────────────────
+BOT_PROTECTION_WAIT = 11          # 秒，与原版一致
+MAX_CAPTCHA_RETRIES = 2
+REGISTER_URL = "https://outlook.live.com/mail/0/?prompt=create_account"
 
 
-def pick(arr): return random.choice(arr)
-def rand(a, b): return random.randint(a, b)
-
-
-def gen_username():
-    fn = pick(FIRST_NAMES)
-    ln = pick(LAST_NAMES)
-    year2 = str(rand(70, 99))
-    year4 = str(rand(1975, 2000))
-    num2  = str(rand(10, 99))
-    num3  = str(rand(100, 999))
-    patterns = [
-        fn + ln,
-        fn + ln + year2,
-        fn.lower() + "." + ln.lower(),
-        fn.lower() + ln.lower() + num2,
-        fn[0].lower() + ln.lower() + year2,
-        fn.lower() + "_" + ln.lower(),
-        fn.lower() + "_" + ln.lower() + num2,
-        fn + ln + num3,
-        fn.lower() + year4,
-        fn[0].lower() + "." + ln.lower() + num2,
-        ln.lower() + fn.lower() + num2,
-        fn[0].lower() + ln.lower() + num3,
-    ]
-    return pick(patterns), fn, ln
-
-
+# ─── 工具函数 ──────────────────────────────────────────────────────────────────
 def gen_password(n=None):
-    n = n or rand(12, 16)
+    n = n or random.randint(12, 16)
     chars = string.ascii_letters + string.digits + "!@#$%^&*"
     while True:
         pw = "".join(secrets.choice(chars) for _ in range(n))
@@ -83,206 +47,416 @@ def gen_password(n=None):
             return pw
 
 
-def gen_birthdate():
-    year  = rand(1975, 2000)
-    month = rand(1, 12)
-    day   = rand(1, 28)
-    return year, month, day
+def gen_email_username():
+    """生成真实人名格式的邮箱用户名"""
+    FIRST = ["James","John","Robert","Michael","William","David","Richard","Joseph","Thomas",
+             "Christopher","Daniel","Matthew","Anthony","Mark","Steven","Paul","Andrew","Joshua",
+             "Benjamin","Samuel","Patrick","Jack","Tyler","Aaron","Nathan","Kyle","Bryan","Eric",
+             "Mary","Patricia","Jennifer","Linda","Elizabeth","Susan","Jessica","Sarah","Karen",
+             "Lisa","Nancy","Ashley","Emily","Donna","Michelle","Amanda","Melissa","Rebecca","Laura",
+             "Emma","Olivia","Liam","Noah","Ava","Sophia","Isabella","Lucas","Ethan","Mason"]
+    LAST  = ["Smith","Johnson","Williams","Brown","Jones","Garcia","Miller","Davis","Rodriguez",
+             "Martinez","Hernandez","Lopez","Wilson","Anderson","Thomas","Taylor","Moore","Jackson",
+             "Lee","Perez","Thompson","White","Harris","Clark","Ramirez","Lewis","Robinson","Walker",
+             "Young","Allen","King","Wright","Scott","Torres","Nguyen","Hill","Green","Adams",
+             "Nelson","Baker","Campbell","Mitchell","Carter","Turner","Phillips","Evans","Collins",
+             "Stewart","Morales","Murphy","Cook","Rogers","Bennett","Gray","Hughes","Patel","Parker"]
+    fn = random.choice(FIRST)
+    ln = random.choice(LAST)
+    y2 = str(random.randint(70, 99))
+    n2 = str(random.randint(10, 99))
+    n3 = str(random.randint(100, 999))
+    patterns = [
+        fn + ln,
+        fn + ln + y2,
+        fn.lower() + "." + ln.lower(),
+        fn.lower() + ln.lower() + n2,
+        fn[0].lower() + ln.lower() + y2,
+        fn.lower() + "_" + ln.lower(),
+        fn.lower() + "_" + ln.lower() + n2,
+        fn + ln + n3,
+        fn[0].lower() + "." + ln.lower() + n2,
+        fn.lower() + ln[0].lower() + n3,
+    ]
+    return random.choice(patterns), fn, ln
 
 
-# ─── Playwright 注册器 ────────────────────────────────────────────────────────
-class OutlookRegistrar:
-    def __init__(self, proxy=None, headless=True, slow_mo=800, timeout=60):
-        self.proxy    = proxy
-        self.headless = headless
-        self.slow_mo  = slow_mo
-        self.timeout  = timeout * 1000  # ms
+# ─── 基础控制器 ───────────────────────────────────────────────────────────────
+class BaseController:
+    def __init__(self, proxy="", wait_ms=None, max_captcha_retries=MAX_CAPTCHA_RETRIES):
+        self.proxy         = proxy
+        self.wait_time     = (wait_ms or BOT_PROTECTION_WAIT) * 1000  # ms
+        self.max_retries   = max_captcha_retries
 
-    async def register_one(self, username: str, password: str, first: str, last: str,
-                           year: int, month: int, day: int) -> dict:
+    def outlook_register(self, page, email, password):
+        """
+        完全复刻原版 BaseBrowserController.outlook_register()
+        """
+        lastname  = fake.last_name()
+        firstname = fake.first_name()
+        year  = str(random.randint(1960, 2005))
+        month = str(random.randint(1, 12))
+        day   = str(random.randint(1, 28))
+
+        # ── Step 1: 打开注册页，等待同意按钮 ──────────────────────────────
         try:
-            from patchright.async_api import async_playwright
-        except ImportError:
-            from playwright.async_api import async_playwright
+            page.goto(REGISTER_URL, timeout=20000, wait_until="domcontentloaded")
+            page.get_by_text("同意并继续").wait_for(timeout=30000)
+            start_time = time.time()
+            page.wait_for_timeout(0.1 * self.wait_time)
+            page.get_by_text("同意并继续").click(timeout=30000)
+        except Exception as e:
+            return False, f"IP质量不佳，无法进入注册界面: {e}", email
 
-        result = {"username": username, "email": f"{username}@outlook.com",
-                  "password": password, "success": False, "error": "", "time": ""}
+        # ── Step 2: 填写邮箱名、密码、生日、姓名 ─────────────────────────
+        try:
+            # 邮箱（支持用户名被占时自动切换建议名）
+            email_input = page.locator('[aria-label="新建电子邮件"]')
+            email_input.wait_for(timeout=10000)
+            email_input.click()
+            email_input.type(email, delay=max(20, 0.006 * self.wait_time), timeout=10000)
+            page.keyboard.press("Tab")
+            page.wait_for_timeout(0.02 * self.wait_time)
+            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
+            page.wait_for_timeout(max(2000, 0.04 * self.wait_time))
 
-        async with async_playwright() as p:
-            launch_kw: dict = {
-                "headless": self.headless,
-                "slow_mo": self.slow_mo,
-                "args": [
-                    "--lang=en-US,en",
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
-            }
-            if self.proxy:
-                launch_kw["proxy"] = {"server": self.proxy}
+            # 检测用户名是否被占用，尝试 Microsoft 推荐的备用名
+            for _attempt in range(3):
+                if page.get_by_text("已被占用").count() or page.get_by_text("username is taken").count():
+                    # 取第一个建议的用户名
+                    suggestion_locs = page.locator('[data-testid="suggestion"], [role="option"]').all()
+                    picked = None
+                    if suggestion_locs:
+                        try:
+                            picked = suggestion_locs[0].inner_text().strip()
+                        except Exception:
+                            pass
+                    if not picked:
+                        # 生成新用户名
+                        new_user, _, _ = gen_email_username()
+                        picked = new_user + str(random.randint(10, 99))
+                    print(f"  ⚠ 用户名被占，切换为: {picked}")
+                    email = picked
+                    email_input = page.locator('[aria-label="新建电子邮件"]')
+                    email_input.click()
+                    email_input.select_all() if hasattr(email_input, 'select_all') else None
+                    page.keyboard.press("Control+a")
+                    page.keyboard.press("Delete")
+                    email_input.type(picked, delay=max(20, 0.006 * self.wait_time))
+                    page.keyboard.press("Tab")
+                    page.wait_for_timeout(0.02 * self.wait_time)
+                    page.locator('[data-testid="primaryButton"]').click(timeout=5000)
+                    page.wait_for_timeout(max(2000, 0.04 * self.wait_time))
+                else:
+                    break
 
-            browser = await p.chromium.launch(**launch_kw)
-            context = await browser.new_context(
-                locale="en-US",
-                timezone_id="America/New_York",
-                viewport={"width": rand(1280, 1920), "height": rand(768, 1080)},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    f"Chrome/12{rand(0,5)}.0.0.0 Safari/537.36"
-                ),
-            )
+            # 密码
+            page.locator('[type="password"]').type(
+                password, delay=0.004 * self.wait_time, timeout=10000)
+            page.wait_for_timeout(0.02 * self.wait_time)
+            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
 
-            # 注入 stealth JS: 隐藏 webdriver 标记
-            await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-                window.chrome = { runtime: {} };
-            """)
+            # 生日
+            page.wait_for_timeout(0.03 * self.wait_time)
+            page.locator('[name="BirthYear"]').fill(year, timeout=10000)
+            try:
+                page.wait_for_timeout(0.02 * self.wait_time)
+                page.locator('[name="BirthMonth"]').select_option(value=month, timeout=1000)
+                page.wait_for_timeout(0.05 * self.wait_time)
+                page.locator('[name="BirthDay"]').select_option(value=day)
+            except Exception:
+                page.locator('[name="BirthMonth"]').click()
+                page.wait_for_timeout(0.02 * self.wait_time)
+                page.locator(f'[role="option"]:text-is("{month}月")').click()
+                page.wait_for_timeout(0.04 * self.wait_time)
+                page.locator('[name="BirthDay"]').click()
+                page.wait_for_timeout(0.03 * self.wait_time)
+                page.locator(f'[role="option"]:text-is("{day}日")').click()
+                page.locator('[data-testid="primaryButton"]').click(timeout=5000)
 
-            page = await context.new_page()
-            t0 = time.time()
+            # 姓名
+            page.locator('#lastNameInput').type(
+                lastname, delay=0.002 * self.wait_time, timeout=10000)
+            page.wait_for_timeout(0.02 * self.wait_time)
+            page.locator('#firstNameInput').fill(firstname, timeout=10000)
+
+            # 等满 bot_protection_wait 再点下一步
+            elapsed = time.time() - start_time
+            if elapsed < self.wait_time / 1000:
+                page.wait_for_timeout((self.wait_time / 1000 - elapsed) * 1000)
+
+            page.locator('[data-testid="primaryButton"]').click(timeout=5000)
+
+            # 等待隐私链接消失 → CAPTCHA 出现
+            page.locator(
+                'span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]'
+            ).wait_for(state="detached", timeout=22000)
+
+            page.wait_for_timeout(400)
+
+            if (page.get_by_text("一些异常活动").count()
+                    or page.get_by_text("此站点正在维护，暂时无法使用，请稍后重试。").count()):
+                return False, "当前IP注册频率过快", email
+
+            if page.locator("iframe#enforcementFrame").count() > 0:
+                return False, "验证码类型错误，非按压验证码", email
+
+            # ── CAPTCHA ──────────────────────────────────────────────────
+            captcha_ok = self.handle_captcha(page)
+            if not captcha_ok:
+                return False, "验证码处理失败", email
+
+        except Exception as e:
+            return False, f"加载超时或触发机器人检测: {e}", email
+
+        return True, "注册成功", email
+
+    def handle_captcha(self, page):
+        raise NotImplementedError
+
+
+# ─── Patchright 控制器 ────────────────────────────────────────────────────────
+class PatchrightController(BaseController):
+    """
+    与原版 PatchrightController.handle_captcha() 完全一致:
+    双 iframe 嵌套的无障碍挑战按钮点击
+    """
+    def launch(self, headless=True):
+        from patchright.sync_api import sync_playwright
+        p = sync_playwright().start()
+        proxy_cfg = {"server": self.proxy, "bypass": "localhost"} if self.proxy else None
+        b = p.chromium.launch(
+            headless=headless,
+            args=["--lang=zh-CN", "--no-sandbox", "--disable-dev-shm-usage"],
+            proxy=proxy_cfg,
+        )
+        return p, b
+
+    def handle_captcha(self, page):
+        frame1 = page.frame_locator('iframe[title="验证质询"]')
+        frame2 = frame1.frame_locator('iframe[style*="display: block"]')
+
+        for _ in range(self.max_retries + 1):
+            page.wait_for_timeout(200)
+
+            loc = frame2.locator('[aria-label="可访问性挑战"]')
+            box = loc.bounding_box()
+            if not box:
+                return False
+            x = box["x"] + box["width"] / 2 + random.randint(-10, 10)
+            y = box["y"] + box["height"] / 2 + random.randint(-10, 10)
+            page.mouse.click(x, y)
+
+            loc2 = frame2.locator('[aria-label="再次按下"]')
+            box2 = loc2.bounding_box()
+            if not box2:
+                return False
+            x2 = box2["x"] + box2["width"] / 2 + random.randint(-20, 20)
+            y2 = box2["y"] + box2["height"] / 2 + random.randint(-13, 13)
+            page.mouse.click(x2, y2)
 
             try:
-                # ── Step 1: 导航到注册页 ──────────────────────────
-                print(f"  [1/6] Opening signup page for {username}@outlook.com")
-                await page.goto("https://signup.live.com/signup", timeout=self.timeout)
-                await page.wait_for_load_state("domcontentloaded")
-                await asyncio.sleep(rand(1, 2))
-
-                # ── Step 2: 填写用户名 ────────────────────────────
-                print(f"  [2/6] Filling username: {username}")
-                uname_sel = 'input[name="MemberName"], input[id="MemberName"], input[aria-label*="mail"]'
-                await page.wait_for_selector(uname_sel, timeout=15000)
-                await page.fill(uname_sel, username)
-                await asyncio.sleep(rand(1, 2))
-
-                # 域名选择 outlook.com (如果有下拉)
+                page.locator(".draw").wait_for(state="detached")
                 try:
-                    domain_sel = 'select[id="LiveDomainBoxList"]'
-                    if await page.query_selector(domain_sel):
-                        await page.select_option(domain_sel, "outlook.com")
-                        await asyncio.sleep(0.5)
+                    page.locator('[role="status"][aria-label="正在加载..."]').wait_for(timeout=5000)
+                    page.wait_for_timeout(8000)
+                    if (page.get_by_text("一些异常活动").count()
+                            or page.get_by_text("此站点正在维护，暂时无法使用，请稍后重试。").count()):
+                        return False
+                    if frame2.locator('[aria-label="可访问性挑战"]').count() > 0:
+                        continue
+                    break
                 except Exception:
-                    pass
+                    if page.get_by_text("取消").count() > 0:
+                        break
+                    frame1.get_by_text("请再试一次").wait_for(timeout=15000)
+                    continue
+            except Exception:
+                if page.get_by_text("取消").count() > 0:
+                    break
+                return False
+        else:
+            return False
 
-                await page.keyboard.press("Tab")
-                await asyncio.sleep(rand(1, 2))
-                next_btn = 'input[value="Next"], button:has-text("Next"), button:has-text("下一步")'
-                await page.click(next_btn, timeout=8000)
-                await asyncio.sleep(rand(1, 2))
+        return True
 
-                # ── Step 3: 填写密码 ──────────────────────────────
-                print(f"  [3/6] Filling password")
-                pw_sel = 'input[name="Password"], input[type="password"]'
-                await page.wait_for_selector(pw_sel, timeout=10000)
-                await page.fill(pw_sel, password)
-                await asyncio.sleep(rand(1, 2))
-                await page.click(next_btn, timeout=8000)
-                await asyncio.sleep(rand(1, 2))
 
-                # ── Step 4: 填写姓名 ──────────────────────────────
-                print(f"  [4/6] Filling name: {first} {last}")
-                fn_sel = 'input[id="FirstName"], input[name="FirstName"], input[aria-label*="First"]'
-                ln_sel = 'input[id="LastName"], input[name="LastName"], input[aria-label*="Last"]'
-                await page.wait_for_selector(fn_sel, timeout=10000)
-                await page.fill(fn_sel, first)
-                await asyncio.sleep(0.5)
-                await page.fill(ln_sel, last)
-                await asyncio.sleep(rand(1, 2))
-                await page.click(next_btn, timeout=8000)
-                await asyncio.sleep(rand(1, 2))
+# ─── Playwright 控制器 ────────────────────────────────────────────────────────
+class PlaywrightController(BaseController):
+    """
+    与原版 PlaywrightController.handle_captcha() 完全一致:
+    监听 hsprotect.net 流量 + Enter 按键法
+    """
+    def launch(self, headless=True):
+        from playwright.sync_api import sync_playwright
+        p = sync_playwright().start()
+        proxy_cfg = {"server": self.proxy, "bypass": "localhost"} if self.proxy else None
+        b = p.chromium.launch(
+            headless=headless,
+            args=["--lang=zh-CN", "--no-sandbox", "--disable-dev-shm-usage"],
+            proxy=proxy_cfg,
+        )
+        return p, b
 
-                # ── Step 5: 填写生日 ──────────────────────────────
-                print(f"  [5/6] Filling birthdate: {month}/{day}/{year}")
+    def handle_captcha(self, page):
+        page.wait_for_event(
+            "request",
+            lambda req: req.url.startswith("blob:https://iframe.hsprotect.net/"),
+            timeout=22000,
+        )
+        page.wait_for_timeout(800)
+
+        for _ in range(self.max_retries + 1):
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(11500)
+            page.keyboard.press("Enter")
+
+            try:
+                page.wait_for_event(
+                    "request",
+                    lambda req: req.url.startswith("https://browser.events.data.microsoft.com"),
+                    timeout=8000,
+                )
                 try:
-                    country_sel = 'select[id="Country"]'
-                    if await page.query_selector(country_sel):
-                        await page.select_option(country_sel, "US")
-                        await asyncio.sleep(0.5)
-                    birth_month = 'select[id="BirthMonth"]'
-                    birth_day   = 'select[id="BirthDay"]'
-                    birth_year  = 'input[id="BirthYear"]'
-                    await page.select_option(birth_month, str(month))
-                    await asyncio.sleep(0.3)
-                    await page.select_option(birth_day, str(day))
-                    await asyncio.sleep(0.3)
-                    await page.fill(birth_year, str(year))
-                    await asyncio.sleep(rand(1, 2))
-                    await page.click(next_btn, timeout=8000)
-                    await asyncio.sleep(rand(2, 3))
-                except Exception as e:
-                    print(f"  [5/6] Birthdate warning: {e}")
+                    page.wait_for_event(
+                        "request",
+                        lambda req: req.url.startswith(
+                            "https://collector-pxzc5j78di.hsprotect.net/assets/js/bundle"
+                        ),
+                        timeout=1700,
+                    )
+                    page.wait_for_timeout(2000)
+                    continue
+                except Exception:
+                    if (page.get_by_text("一些异常活动").count()
+                            or page.get_by_text("此站点正在维护，暂时无法使用，请稍后重试。").count()):
+                        return False
+                    break
+            except Exception:
+                page.wait_for_timeout(5000)
+                page.keyboard.press("Enter")
+                page.wait_for_event(
+                    "request",
+                    lambda req: req.url.startswith("https://browser.events.data.microsoft.com"),
+                    timeout=10000,
+                )
+                try:
+                    page.wait_for_event(
+                        "request",
+                        lambda req: req.url.startswith(
+                            "https://collector-pxzc5j78di.hsprotect.net/assets/js/bundle"
+                        ),
+                        timeout=4000,
+                    )
+                except Exception:
+                    break
+                page.wait_for_timeout(500)
+        else:
+            return False
 
-                # ── Step 6: 处理验证码 / 等待完成 ─────────────────
-                print(f"  [6/6] Checking for CAPTCHA or completion...")
-                current_url = page.url
-                if "account/intro" in current_url or "outlook.com" in current_url:
-                    result["success"] = True
-                    result["time"] = f"{time.time()-t0:.1f}s"
-                    print(f"  ✅ REGISTERED: {username}@outlook.com ({result['time']})")
-                else:
-                    # 可能还有验证码或额外步骤
-                    try:
-                        # 等待成功跳转或错误
-                        await page.wait_for_url("**/account/intro**", timeout=30000)
-                        result["success"] = True
-                        result["time"] = f"{time.time()-t0:.1f}s"
-                        print(f"  ✅ REGISTERED: {username}@outlook.com ({result['time']})")
-                    except Exception:
-                        # 截图便于调试
-                        screenshot_path = f"/tmp/outlook_fail_{username}.png"
-                        await page.screenshot(path=screenshot_path)
-                        result["error"] = f"未能完成注册 (可能有验证码), 截图: {screenshot_path}"
-                        print(f"  ❌ FAILED: {result['error']}")
+        return True
 
-            except Exception as e:
-                result["error"] = str(e)
-                print(f"  ❌ ERROR: {e}")
 
-            finally:
-                await browser.close()
+# ─── 主任务 ───────────────────────────────────────────────────────────────────
+def register_one(ctrl, engine_name: str, headless: bool) -> dict:
+    username, fn_eng, ln_eng = gen_email_username()
+    email    = username
+    password = gen_password()
+    result   = {
+        "email": f"{email}@outlook.com",
+        "username": email,
+        "password": password,
+        "success": False,
+        "error": "",
+        "elapsed": "",
+        "engine": engine_name,
+    }
 
+    p, b = ctrl.launch(headless=headless)
+    if not p:
+        result["error"] = "浏览器启动失败"
         return result
 
+    context = b.new_context(
+        locale="zh-CN",
+        timezone_id="Asia/Shanghai",
+        viewport={"width": random.randint(1280, 1920), "height": random.randint(768, 1080)},
+    )
+    page = context.new_page()
+    t0 = time.time()
 
-# ─── 主程序 ───────────────────────────────────────────────────────────────────
-async def main():
-    parser = argparse.ArgumentParser(description="Outlook 批量注册工具")
-    parser.add_argument("--count",    type=int, default=1,   help="注册数量")
-    parser.add_argument("--proxy",    type=str, default="",  help="代理地址, 如 socks5://127.0.0.1:1080")
-    parser.add_argument("--output",   type=str, default="",  help="输出文件 (默认仅打印)")
-    parser.add_argument("--headless", type=str, default="true", help="true/false")
-    parser.add_argument("--delay",    type=int, default=3,   help="每次注册间隔秒数")
+    try:
+        ok, msg, actual_email = ctrl.outlook_register(page, email, password)
+        result["success"]  = ok
+        result["error"]    = "" if ok else msg
+        result["email"]    = f"{actual_email}@outlook.com"
+        result["username"] = actual_email
+
+        if ok:
+            try:
+                page.screenshot(path=f"/tmp/outlook_ok_{actual_email}.png")
+            except Exception:
+                pass
+        else:
+            try:
+                page.screenshot(path=f"/tmp/outlook_fail_{actual_email}.png")
+            except Exception:
+                pass
+    except Exception as e:
+        result["error"] = str(e)
+        try:
+            page.screenshot(path=f"/tmp/outlook_err_{email}.png")
+        except Exception:
+            pass
+    finally:
+        try:
+            b.close()
+            p.stop()
+        except Exception:
+            pass
+
+    result["elapsed"] = f"{time.time()-t0:.1f}s"
+    return result
+
+
+# ─── 入口 ─────────────────────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(description="Outlook 批量注册 (参考 outlook-batch-manager)")
+    parser.add_argument("--count",      type=int,   default=1,          help="注册数量")
+    parser.add_argument("--proxy",      type=str,   default="",         help="代理, 如 socks5://127.0.0.1:1080")
+    parser.add_argument("--engine",     type=str,   default="patchright", choices=["patchright","playwright"])
+    parser.add_argument("--headless",   type=str,   default="true",     help="true/false")
+    parser.add_argument("--wait",       type=int,   default=BOT_PROTECTION_WAIT, help="bot_protection_wait (秒)")
+    parser.add_argument("--retries",    type=int,   default=MAX_CAPTCHA_RETRIES)
+    parser.add_argument("--delay",      type=int,   default=5,          help="每次注册间隔秒数")
+    parser.add_argument("--output",     type=str,   default="",         help="输出文件")
     args = parser.parse_args()
 
     headless = args.headless.lower() != "false"
-    registrar = OutlookRegistrar(proxy=args.proxy or None, headless=headless)
+    CtrlCls  = PatchrightController if args.engine == "patchright" else PlaywrightController
+    ctrl     = CtrlCls(proxy=args.proxy or "", wait_ms=args.wait, max_captcha_retries=args.retries)
+
+    print(f"\n🚀 Outlook 批量注册  引擎={args.engine}  headless={headless}  count={args.count}")
+    print(f"   bot_protection_wait={args.wait}s  max_captcha_retries={args.retries}")
+    print(f"   入口URL: {REGISTER_URL}\n{'─'*60}")
+
     results = []
-
-    print(f"\n🚀 Outlook 批量注册 — 共 {args.count} 个账号\n{'─'*50}")
-
     for i in range(args.count):
-        username, first, last = gen_username()
-        password = gen_password()
-        year, month, day = gen_birthdate()
+        print(f"\n[{i+1}/{args.count}] 开始注册...")
+        r = register_one(ctrl, args.engine, headless)
+        results.append(r)
 
-        print(f"\n[{i+1}/{args.count}] 注册: {username}@outlook.com | {first} {last} | 生日: {year}/{month}/{day}")
-        result = await registrar.register_one(username, password, first, last, year, month, day)
-        result.update({"firstName": first, "lastName": last, "birthYear": year, "birthMonth": month, "birthDay": day})
-        results.append(result)
+        status = "✅ 注册成功" if r["success"] else f"❌ {r['error']}"
+        print(f"  {status}  |  {r['email']}  密码: {r['password']}  耗时: {r['elapsed']}")
 
         if i < args.count - 1:
-            delay = args.delay + rand(0, 3)
-            print(f"  ⏱ 等待 {delay}s 再注册下一个...")
-            await asyncio.sleep(delay)
+            delay = args.delay + random.randint(0, 3)
+            print(f"  ⏱ 等待 {delay}s ...")
+            time.sleep(delay)
 
-    # ── 汇总 ──────────────────────────────────────────────
     ok  = [r for r in results if r["success"]]
     bad = [r for r in results if not r["success"]]
-    print(f"\n{'─'*50}")
+    print(f"\n{'─'*60}")
     print(f"✅ 成功: {len(ok)} / {len(results)}")
     for r in ok:
         print(f"  📧 {r['email']}  密码: {r['password']}")
@@ -292,15 +466,14 @@ async def main():
             print(f"  {r['email']}: {r['error']}")
 
     if args.output:
-        Path(args.output).write_text(
-            "\n".join(f"{r['email']}----{r['password']}" for r in ok)
-        )
+        Path(args.output).write_text("\n".join(
+            f"{r['email']}----{r['password']}" for r in ok
+        ))
         print(f"\n💾 已保存 {len(ok)} 条到 {args.output}")
 
-    # JSON 结果打印 (供其他脚本调用)
-    print("\n── JSON ──")
+    print("\n── JSON 结果 ──")
     print(json.dumps(results, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

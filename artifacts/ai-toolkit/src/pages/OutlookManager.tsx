@@ -1,7 +1,9 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 interface MailMsg { id: string; subject: string; from: string; fromName: string; receivedAt: string; preview: string; isRead: boolean; }
 interface Profile { displayName?: string; mail?: string; userPrincipalName?: string; }
+interface RegAccount { email: string; password: string; }
+interface SseEvent { type: string; message: string; account?: RegAccount; }
 type Step = 1 | 2 | 3 | 4;
 
 const STEPS = [
@@ -24,6 +26,81 @@ export default function OutlookManager() {
   const [step1Busy, setStep1Busy]     = useState(false);
   const [step1Msgs, setStep1Msgs]     = useState<Array<{ from: string; subject: string; intro: string }>>([]);
   const pollRef = useRef<ReturnType<typeof setInterval>|null>(null);
+
+  // Step 2 – 自动化注册
+  const [regEngine,  setRegEngine]   = useState("patchright");
+  const [regCount,   setRegCount]    = useState(1);
+  const [regProxy,   setRegProxy]    = useState("");
+  const [regWait,    setRegWait]     = useState(11);
+  const [regDelay,   setRegDelay]    = useState(5);
+  const [regRetries, setRegRetries]  = useState(2);
+  const [regHeadless,setRegHeadless] = useState(true);
+  const [regBusy,    setRegBusy]     = useState(false);
+  const [regLogs,    setRegLogs]     = useState<SseEvent[]>([]);
+  const [regAccounts,setRegAccounts] = useState<RegAccount[]>([]);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  const xhrRef     = useRef<XMLHttpRequest|null>(null);
+
+  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [regLogs]);
+
+  const startRegister = () => {
+    if (regBusy) return;
+    setRegBusy(true);
+    setRegLogs([]);
+
+    const xhr = new XMLHttpRequest();
+    xhrRef.current = xhr;
+    xhr.open("POST", "/api/tools/outlook/register", true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.setRequestHeader("Accept", "text/event-stream");
+
+    let buf = "";
+    xhr.onprogress = () => {
+      const newData = xhr.responseText.slice(buf.length);
+      buf = xhr.responseText;
+      const chunks = newData.split("\n\n").filter(Boolean);
+      for (const chunk of chunks) {
+        const line = chunk.replace(/^data:\s*/, "");
+        try {
+          const ev = JSON.parse(line) as SseEvent & { accounts?: RegAccount[] };
+          if (ev.type === "accounts" && ev.accounts) {
+            setRegAccounts(prev => [...prev, ...ev.accounts!]);
+          } else if (ev.account) {
+            setRegAccounts(prev => [...prev, ev.account!]);
+          }
+          if (ev.message) setRegLogs(prev => [...prev, ev]);
+        } catch {}
+      }
+    };
+    xhr.onloadend = () => setRegBusy(false);
+    xhr.onerror   = () => setRegBusy(false);
+
+    xhr.send(JSON.stringify({
+      count:   regCount,
+      proxy:   regProxy,
+      headless: regHeadless,
+      delay:   regDelay,
+      engine:  regEngine,
+      wait:    regWait,
+      retries: regRetries,
+    }));
+  };
+
+  const stopRegister = () => {
+    xhrRef.current?.abort();
+    setRegBusy(false);
+    setRegLogs(prev => [...prev, { type: "warn", message: "⚠ 用户手动停止" }]);
+  };
+
+  const exportRegAccounts = (fmt: "txt"|"csv"|"json") => {
+    let content = "";
+    if (fmt === "txt")  content = regAccounts.map(a => `${a.email}----${a.password}`).join("\n");
+    if (fmt === "csv")  content = "email,password\n" + regAccounts.map(a => `${a.email},${a.password}`).join("\n");
+    if (fmt === "json") content = JSON.stringify(regAccounts, null, 2);
+    const blob = new Blob([content], { type: "text/plain" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `outlook_accounts_${Date.now()}.${fmt}`; a.click();
+  };
 
   // Step 3 – OAuth2
   const [clientId,  setClientId]      = useState("9e5f94bc-e8a4-4e73-b8be-63364c29d753"); // 常用公共 client_id
@@ -216,50 +293,156 @@ export default function OutlookManager() {
         </div>
       )}
 
-      {/* ── Step 2: 注册指引 ── */}
+      {/* ── Step 2: 自动化注册控制台 ── */}
       {step === 2 && (
         <div className="space-y-4">
-          {tmpEmail && (
-            <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 flex items-center gap-3">
-              <span className="text-xl">📬</span>
+          {/* 配置面板 */}
+          <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-300">Outlook 批量注册控制台</h3>
+              <span className="text-[10px] text-gray-500 bg-[#0d1117] border border-[#30363d] rounded px-2 py-0.5">
+                基于 outlook-batch-manager 核心逻辑
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {/* 引擎 */}
               <div>
-                <p className="text-xs text-gray-400">使用以下邮箱进行 Outlook 注册</p>
-                <p className="text-sm font-mono font-bold text-blue-300">{tmpEmail}</p>
+                <label className="text-[11px] text-gray-500 mb-1 block">浏览器引擎</label>
+                <select value={regEngine} onChange={e => setRegEngine(e.target.value)} disabled={regBusy}
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50">
+                  <option value="patchright">patchright（推荐）</option>
+                  <option value="playwright">playwright</option>
+                </select>
               </div>
-              <button onClick={() => copy(tmpEmail, "reg-email")} className="ml-auto text-xs px-2 py-1 rounded border border-[#30363d] bg-[#21262d] text-gray-400 hover:text-white">{copied === "reg-email" ? "✓" : "复制"}</button>
+              {/* 数量 */}
+              <div>
+                <label className="text-[11px] text-gray-500 mb-1 block">注册数量 (max 10)</label>
+                <input type="number" min={1} max={10} value={regCount} onChange={e => setRegCount(+e.target.value)} disabled={regBusy}
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50" />
+              </div>
+              {/* bot_protection_wait */}
+              <div>
+                <label className="text-[11px] text-gray-500 mb-1 block">bot_protection_wait (秒)</label>
+                <input type="number" min={3} max={30} value={regWait} onChange={e => setRegWait(+e.target.value)} disabled={regBusy}
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50" />
+              </div>
+              {/* 间隔 */}
+              <div>
+                <label className="text-[11px] text-gray-500 mb-1 block">账号间隔 (秒)</label>
+                <input type="number" min={2} max={30} value={regDelay} onChange={e => setRegDelay(+e.target.value)} disabled={regBusy}
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50" />
+              </div>
+              {/* retries */}
+              <div>
+                <label className="text-[11px] text-gray-500 mb-1 block">CAPTCHA 重试次数</label>
+                <input type="number" min={1} max={5} value={regRetries} onChange={e => setRegRetries(+e.target.value)} disabled={regBusy}
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50" />
+              </div>
+              {/* headless */}
+              <div className="flex flex-col">
+                <label className="text-[11px] text-gray-500 mb-1 block">无头模式</label>
+                <button onClick={() => setRegHeadless(h => !h)} disabled={regBusy}
+                  className={`flex-1 text-xs rounded-lg border transition-all ${regHeadless ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-400" : "bg-orange-500/10 border-orange-500/30 text-orange-400"} disabled:opacity-50`}>
+                  {regHeadless ? "✓ headless=true" : "× headless=false"}
+                </button>
+              </div>
+            </div>
+
+            {/* 代理 */}
+            <div>
+              <label className="text-[11px] text-gray-500 mb-1 block">
+                代理地址 <span className="text-red-400">（强烈建议使用住宅代理，避免服务器 IP 被 Microsoft 识别）</span>
+              </label>
+              <input value={regProxy} onChange={e => setRegProxy(e.target.value)} disabled={regBusy}
+                placeholder="socks5://user:pass@127.0.0.1:1080  或  http://proxy:port"
+                className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50 placeholder-gray-600" />
+            </div>
+
+            {/* 代理说明 */}
+            <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 text-xs text-gray-400">
+              <span className="text-amber-400 font-semibold">⚠ 注意：</span> Microsoft 对服务器/数据中心 IP 进行严格限制。
+              注册成功率取决于代理 IP 质量。建议使用 <span className="text-blue-400">住宅代理</span> 或 <span className="text-blue-400">真实手机网络</span>。
+              无代理时流程仍会运行直到 CAPTCHA 阶段（用于测试）。
+            </div>
+
+            <div className="flex gap-3">
+              <button onClick={startRegister} disabled={regBusy}
+                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-all">
+                {regBusy ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    注册进行中...
+                  </span>
+                ) : "▶ 开始自动化注册"}
+              </button>
+              {regBusy && (
+                <button onClick={stopRegister}
+                  className="px-4 py-2.5 bg-red-600/80 hover:bg-red-700 rounded-lg text-white text-sm font-medium transition-all">
+                  停止
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 实时日志流 */}
+          {regLogs.length > 0 && (
+            <div className="bg-[#0d1117] border border-[#21262d] rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2 border-b border-[#21262d]">
+                <span className="text-xs text-gray-500 font-semibold">实时日志</span>
+                <span className="text-[10px] text-gray-600">{regLogs.length} 条</span>
+              </div>
+              <div className="p-3 max-h-48 overflow-y-auto space-y-0.5 font-mono text-[11px]">
+                {regLogs.map((ev, i) => (
+                  <div key={i} className={`leading-relaxed ${
+                    ev.type === "success" ? "text-emerald-400" :
+                    ev.type === "error"   ? "text-red-400" :
+                    ev.type === "warn"    ? "text-yellow-400" :
+                    ev.type === "start"   ? "text-blue-400" :
+                    ev.type === "done"    ? "text-purple-400" :
+                    "text-gray-500"
+                  }`}>{ev.message}</div>
+                ))}
+                <div ref={logsEndRef} />
+              </div>
             </div>
           )}
-          <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-5 space-y-4">
-            <h3 className="text-sm font-semibold text-gray-300">Outlook/Hotmail 注册步骤</h3>
-            <ol className="space-y-3">
-              {[
-                { n: "1", title: "打开注册页", desc: '访问 outlook.com，点击【创建免费帐户】', action: { label: "打开 Outlook 注册", url: "https://signup.live.com/signup" } },
-                { n: "2", title: "填写手机/邮箱", desc: `选择【使用当前电子邮件地址】，输入上方 MailTM 邮箱：${tmpEmail || "（请先在第一步创建）"}` },
-                { n: "3", title: "接收验证码", desc: "Microsoft 会向 MailTM 邮箱发送验证码，回到第一步查看实时收件箱" },
-                { n: "4", title: "完成注册", desc: "填写姓名、生日，通过验证码验证完成注册，记录你的 @outlook.com 邮箱地址和密码" },
-                { n: "5", title: "获取 OAuth2 Token", desc: "注册完成后，前往第三步用工具获取 Refresh Token，用于后续 API 取件" },
-              ].map((item) => (
-                <li key={item.n} className="flex gap-3">
-                  <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs flex items-center justify-center font-bold shrink-0 mt-0.5">{item.n}</span>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-200">{item.title}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{item.desc}</p>
-                    {item.action && (
-                      <a href={item.action.url} target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 mt-1.5 text-xs px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded-lg text-white transition-all">
-                        {item.action.label} →
-                      </a>
-                    )}
+
+          {/* 已注册账号列表 */}
+          {regAccounts.length > 0 && (
+            <div className="bg-[#161b22] border border-emerald-500/20 rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#21262d]">
+                <span className="text-xs text-emerald-400 font-semibold">✅ 注册成功 ({regAccounts.length} 个)</span>
+                <div className="flex gap-1.5">
+                  {(["txt","csv","json"] as const).map(fmt => (
+                    <button key={fmt} onClick={() => exportRegAccounts(fmt)}
+                      className="text-[10px] px-2 py-0.5 rounded border border-[#30363d] bg-[#21262d] text-gray-400 hover:text-white transition-all">
+                      {fmt.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="divide-y divide-[#21262d] max-h-56 overflow-y-auto">
+                {regAccounts.map((acc, i) => (
+                  <div key={i} className="flex items-center gap-3 px-4 py-2">
+                    <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] flex items-center justify-center font-bold shrink-0">{i+1}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-mono text-blue-300 truncate">{acc.email}</p>
+                      <p className="text-[10px] font-mono text-gray-500 truncate">{acc.password}</p>
+                    </div>
+                    <button onClick={() => copy(`${acc.email}----${acc.password}`, `ra-${i}`)}
+                      className={`text-[10px] px-2 py-0.5 rounded border shrink-0 ${copied === `ra-${i}` ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-400" : "bg-[#21262d] border-[#30363d] text-gray-500 hover:text-white"}`}>
+                      {copied === `ra-${i}` ? "✓" : "复制"}
+                    </button>
                   </div>
-                </li>
-              ))}
-            </ol>
-            <div className="bg-[#0d1117] border border-[#30363d] rounded-lg p-3">
-              <p className="text-xs font-semibold text-yellow-400 mb-1">关于 Outlook 批量自动化注册</p>
-              <p className="text-xs text-gray-400">完整自动化注册需要 Playwright/patchright 浏览器自动化环境（参考 <a href="https://github.com/hrhcode/outlook-batch-manager" target="_blank" className="text-blue-400">outlook-batch-manager</a>）。本工具提供工作流接口，自动化执行需在本地部署含浏览器的 Python 环境。</p>
+                ))}
+              </div>
             </div>
-            <button onClick={() => setStep(3)} className="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-medium">注册完成 → 获取 OAuth2 Token</button>
-          </div>
+          )}
+
+          <button onClick={() => setStep(3)} className="w-full py-2 bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] rounded-lg text-gray-300 text-sm font-medium transition-all">
+            跳过 → 获取 OAuth2 Token
+          </button>
         </div>
       )}
 

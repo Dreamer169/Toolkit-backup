@@ -708,55 +708,108 @@ router.get("/tools/outlook/profile", async (req, res) => {
   }
 });
 
-// ── Playwright Outlook 批量注册 (SSE) ────────────────────
+// ── Playwright/Patchright Outlook 批量注册 (SSE) ─────────
 router.post("/tools/outlook/register", async (req, res) => {
-  const { count = 1, proxy = "", headless = true, delay = 3 } = req.body as {
+  const {
+    count   = 1,
+    proxy   = "",
+    headless = true,
+    delay   = 5,
+    engine  = "patchright",
+    wait    = 11,
+    retries = 2,
+  } = req.body as {
     count?: number; proxy?: string; headless?: boolean; delay?: number;
+    engine?: string; wait?: number; retries?: number;
   };
-  const n = Math.min(10, Math.max(1, count));
+  const n    = Math.min(10, Math.max(1, count));
+  const eng  = ["patchright", "playwright"].includes(engine) ? engine : "patchright";
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
-  const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  const send = (data: object) => { try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch {} };
 
   const { spawn } = await import("child_process");
-  const scriptPath = new URL("../../outlook_register.py", import.meta.url).pathname;
+  const scriptPath = new URL("../outlook_register.py", import.meta.url).pathname;
   const args = [
-    scriptPath, "--count", String(n),
-    "--headless", String(headless),
-    "--delay", String(delay),
+    scriptPath,
+    "--count",   String(n),
+    "--headless", headless ? "true" : "false",
+    "--delay",   String(delay),
+    "--engine",  eng,
+    "--wait",    String(wait),
+    "--retries", String(retries),
   ];
   if (proxy) args.push("--proxy", proxy);
 
-  send({ type: "start", message: `启动 Playwright 注册 ${n} 个 Outlook 账号...` });
+  send({ type: "start", message: `启动 ${eng} 注册 ${n} 个 Outlook 账号 (bot_protection_wait=${wait}s)...` });
 
   const child = spawn("python3", args, { env: { ...process.env, PYTHONUNBUFFERED: "1" } });
 
+  let jsonBuf = "";
+  let inJson  = false;
+  const accounts: Array<{ email: string; password: string; engine: string }> = [];
+
   child.stdout.on("data", (chunk: Buffer) => {
-    const lines = chunk.toString().split("\n").filter(Boolean);
+    const raw = chunk.toString();
+
+    // collect JSON block at the end
+    if (raw.includes("── JSON 结果 ──") || inJson) {
+      inJson = true;
+      jsonBuf += raw;
+    }
+
+    const lines = raw.split("\n").filter(Boolean);
     for (const line of lines) {
-      if (line.startsWith("──") || line.startsWith("🚀")) continue;
-      const isOk  = line.includes("✅");
-      const isFail = line.includes("❌");
-      send({ type: isOk ? "success" : isFail ? "error" : "log", message: line.trim() });
+      const t = line.trim();
+      if (!t || t.startsWith("──") || t.startsWith("🚀") || t.startsWith("[{") || t.startsWith("{") || t === "]" || t === "}") continue;
+
+      if (t.includes("⚠")) {
+        send({ type: "warn", message: t });
+      } else if (t.includes("✅") && t.includes("@outlook.com")) {
+        // parse success line: "✅ 注册成功  |  user@outlook.com  密码: xxx  耗时: 80s"
+        const emailM = t.match(/([\w.\-+]+@outlook\.com)/);
+        const passM  = t.match(/密码:\s*(\S+)/);
+        if (emailM && passM) {
+          accounts.push({ email: emailM[1], password: passM[1], engine: eng });
+          send({ type: "success", message: t, account: { email: emailM[1], password: passM[1] } });
+        } else {
+          send({ type: "success", message: t });
+        }
+      } else if (t.includes("❌")) {
+        send({ type: "error", message: t });
+      } else {
+        send({ type: "log", message: t });
+      }
     }
   });
 
   child.stderr.on("data", (chunk: Buffer) => {
     const msg = chunk.toString().trim();
-    if (msg && !msg.includes("DeprecationWarning")) {
-      send({ type: "log", message: `[stderr] ${msg.slice(0, 200)}` });
+    if (msg && !msg.includes("DeprecationWarning") && !msg.includes("FutureWarning") && !msg.includes("UserWarning")) {
+      send({ type: "log", message: `[sys] ${msg.slice(0, 300)}` });
     }
   });
 
   child.on("close", (code) => {
-    send({ type: "done", exitCode: code, message: `注册任务完成 (退出码: ${code})` });
+    // Try to parse JSON results block for a clean accounts list
+    try {
+      const jsonStart = jsonBuf.indexOf("[");
+      if (jsonStart >= 0) {
+        const parsed = JSON.parse(jsonBuf.slice(jsonStart).replace(/\n──.*$/s, "").trim()) as Array<Record<string, unknown>>;
+        const ok = parsed.filter((r) => r.success);
+        if (ok.length) {
+          send({ type: "accounts", accounts: ok });
+        }
+      }
+    } catch {}
+    send({ type: "done", exitCode: code, total: accounts.length, message: `注册任务完成 · 成功 ${accounts.length} 个` });
     res.end();
   });
 
-  req.on("close", () => child.kill());
+  req.on("close", () => { try { child.kill(); } catch {} });
 });
 
 router.get("/tools/ip-check", async (req, res) => {
