@@ -635,10 +635,37 @@ class PatchrightController(BaseController):
         def _find_frame2():
             """
             多策略查找包含无障碍挑战按钮的内层 frame。
-            先等 Arkose Labs 内容加载完全（5 秒），再扫描。
+            先等 Arkose Labs 内容完全加载（按钮变为可用），再扫描。
             """
-            # 等 Arkose Labs CAPTCHA 内容完全加载
-            page.wait_for_timeout(5000)
+            # 等 Arkose Labs CAPTCHA 内容完全加载（最多 25s）
+            # 关键：等待 aria-disabled 消失（按钮由灰色变为可点击状态）
+            print("[captcha] 等待 CAPTCHA 游戏加载完成（最多25s）…", flush=True)
+            page.wait_for_timeout(3000)
+            for _wait in range(22):  # 最多再等 22 秒
+                all_fr = page.frames
+                for _fr in all_fr:
+                    try:
+                        # 检查是否有可用的无障碍按钮（非disabled）
+                        enabled = _fr.evaluate("""
+                            () => {
+                                const btn = document.querySelector('[aria-label="可访问性挑战"], [aria-label="Accessible challenge"], [aria-label="Audio challenge"]');
+                                if (!btn) return null;
+                                return {
+                                    disabled: btn.getAttribute('aria-disabled'),
+                                    opacity: btn.style.opacity,
+                                    text: btn.textContent.substring(0, 30)
+                                };
+                            }
+                        """)
+                        if enabled and enabled.get('disabled') != 'true':
+                            print(f"[captcha] ✅ 无障碍按钮已启用: {enabled}", flush=True)
+                            break
+                    except Exception:
+                        pass
+                else:
+                    page.wait_for_timeout(1000)
+                    continue
+                break
 
             # 策略1：遍历所有页面 frames 找 hsprotect.net 或含无障碍按钮的 frame
             all_frames = page.frames
@@ -687,6 +714,35 @@ class PatchrightController(BaseController):
             2. JS 选择器点击（适用于 Frame 对象）
             3. 键盘 Tab+Enter 导航
             """
+            # 方法0：JS 强制启用按钮后点击（绕过 aria-disabled）
+            if hasattr(frame_or_locator, 'evaluate'):
+                try:
+                    result = frame_or_locator.evaluate("""
+                        () => {
+                            const sel = '[aria-label="可访问性挑战"],[aria-label="Accessible challenge"],[aria-label="Audio challenge"]';
+                            const btn = document.querySelector(sel);
+                            if (!btn) return {found: false};
+                            const wasDisabled = btn.getAttribute('aria-disabled');
+                            // 强制启用：移除 disabled 属性，设置 opacity
+                            btn.removeAttribute('aria-disabled');
+                            btn.removeAttribute('disabled');
+                            btn.style.opacity = '1';
+                            btn.style.pointerEvents = 'auto';
+                            // 用鼠标事件模拟点击（比 .click() 更完整）
+                            ['mousedown','mouseup','click'].forEach(evName => {
+                                btn.dispatchEvent(new MouseEvent(evName, {
+                                    bubbles: true, cancelable: true, view: window
+                                }));
+                            });
+                            return {found: true, wasDisabled};
+                        }
+                    """)
+                    if result and result.get('found'):
+                        print(f"[captcha] ✅ JS强制启用并点击（原disabled={result.get('wasDisabled')}）", flush=True)
+                        return True
+                except Exception as e:
+                    print(f"[captcha] JS强制点击异常: {e}", flush=True)
+
             # 方法1：aria-label 精确匹配
             for lbl in ACCESSIBILITY_LABELS:
                 try:
@@ -761,34 +817,42 @@ class PatchrightController(BaseController):
             print("[captcha] ✅ 无障碍按钮点击成功", flush=True)
             page.wait_for_timeout(2000)
 
-            # ── 点击后截图 + 转储 frame2 HTML（诊断）────────────────────────
+            # ── 点击后等待音频挑战界面加载（5s）────────────────────────────
+            page.wait_for_timeout(5000)
+
+            # ── 截图 + 全面诊断（所有 frames）────────────────────────────────
             try:
                 page.screenshot(path=f"/tmp/outlook_captcha_after_a11y_{attempt}.png")
                 print(f"[captcha] 截图已保存 /tmp/outlook_captcha_after_a11y_{attempt}.png", flush=True)
             except Exception:
                 pass
-            if hasattr(frame2, 'evaluate'):
+            # 扫描所有 frames，特别关注音频元素和输入框
+            all_frames_now = page.frames
+            print(f"[captcha] 点击后帧扫描（{len(all_frames_now)} frames）：", flush=True)
+            for _df in all_frames_now:
                 try:
-                    html_snippet = frame2.evaluate("document.body.innerHTML.substring(0, 2000)")
-                    print(f"[captcha] frame2 HTML(截取2000): {html_snippet[:500]}", flush=True)
-                    # 查找音频元素
-                    audio_info = frame2.evaluate("""
+                    detail = _df.evaluate("""
                         () => {
-                            const audios = Array.from(document.querySelectorAll('audio, [class*="audio"]'));
-                            const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="tel"], input[placeholder]'));
+                            const body = document.body ? document.body.innerHTML.substring(0, 300) : '';
+                            const audios = Array.from(document.querySelectorAll('audio'));
+                            const inputs = Array.from(document.querySelectorAll('input[type="text"],input[type="tel"]'));
                             return {
-                                audios: audios.slice(0,5).map(a => ({src: a.src || a.getAttribute('data-src') || '', cls: a.className})),
-                                inputs: inputs.slice(0,5).map(i => ({type: i.type, ph: i.placeholder, cls: i.className}))
+                                url: window.location.href.substring(0, 60),
+                                audios: audios.map(a => a.src || a.currentSrc || '').filter(Boolean),
+                                inputs: inputs.length,
+                                bodySnippet: body.substring(0, 200)
                             };
                         }
                     """)
-                    print(f"[captcha] 音频/输入框: {audio_info}", flush=True)
-                except Exception as e:
-                    print(f"[captcha] HTML转储失败: {e}", flush=True)
+                    if detail.get('audios') or detail.get('inputs'):
+                        print(f"[captcha]   🔊 {detail['url']}: audios={detail['audios']}, inputs={detail['inputs']}", flush=True)
+                        print(f"[captcha]      body: {detail.get('bodySnippet','')[:200]}", flush=True)
+                    else:
+                        print(f"[captcha]   frame {detail['url']}: 无音频/输入", flush=True)
+                except Exception:
+                    pass
 
             # ── Whisper 音频 CAPTCHA 解法 ──────────────────────────────────
-            # 等待音频挑战在任意 frame 中加载
-            page.wait_for_timeout(3000)
             audio_solved = self._solve_audio_challenge(page, frame2)
             if audio_solved:
                 print("[captcha] ✅ 音频挑战通过！", flush=True)
