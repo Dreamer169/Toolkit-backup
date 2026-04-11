@@ -1,5 +1,100 @@
 import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+// ─── 密码保护门 ───────────────────────────────────────────────────────────────
+const CORRECT_PASSWORD = "yu123456";
+const AUTH_KEY = "toolkit_auth_v1";
+
+function PasswordGate({ children }: { children: React.ReactNode }) {
+  const [authed, setAuthed] = useState(() => sessionStorage.getItem(AUTH_KEY) === "1");
+  const [input, setInput] = useState("");
+  const [error, setError] = useState(false);
+  const [show, setShow] = useState(false);
+  const [shaking, setShaking] = useState(false);
+
+  if (authed) return <>{children}</>;
+
+  const submit = () => {
+    if (input === CORRECT_PASSWORD) {
+      sessionStorage.setItem(AUTH_KEY, "1");
+      setAuthed(true);
+    } else {
+      setError(true);
+      setShaking(true);
+      setTimeout(() => setShaking(false), 500);
+      setInput("");
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0d1117] flex items-center justify-center px-4">
+      <div className={`w-full max-w-sm ${shaking ? "animate-shake" : ""}`}>
+        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-8 shadow-2xl">
+          {/* Logo */}
+          <div className="flex flex-col items-center mb-8">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center font-bold text-white text-xl shadow-lg mb-4">
+              AI
+            </div>
+            <h1 className="text-white font-bold text-xl">AI Account Toolkit</h1>
+            <p className="text-gray-500 text-sm mt-1">请输入访问密码</p>
+          </div>
+
+          {/* 输入区 */}
+          <form className="space-y-4" onSubmit={e => { e.preventDefault(); submit(); }}>
+            <div className="relative">
+              <input
+                type={show ? "text" : "password"}
+                value={input}
+                onChange={e => { setInput(e.target.value); setError(false); }}
+                placeholder="输入密码..."
+                autoFocus
+                autoComplete="current-password"
+                className={`w-full bg-[#0d1117] border rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 outline-none transition-all pr-10 ${
+                  error
+                    ? "border-red-500 focus:border-red-500"
+                    : "border-[#30363d] focus:border-blue-500"
+                }`}
+              />
+              <button
+                type="button"
+                onClick={() => setShow(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-sm"
+              >
+                {show ? "🙈" : "👁️"}
+              </button>
+            </div>
+
+            {error && (
+              <p className="text-red-400 text-xs text-center">密码错误，请重试</p>
+            )}
+
+            <button
+              type="submit"
+              className="w-full py-3 bg-blue-600 hover:bg-blue-500 rounded-xl text-white text-sm font-semibold transition-colors"
+            >
+              进入
+            </button>
+          </form>
+        </div>
+
+        <p className="text-center text-gray-700 text-xs mt-6">
+          AI Account Toolkit — 仅供授权用户访问
+        </p>
+      </div>
+
+      <style>{`
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          20% { transform: translateX(-8px); }
+          40% { transform: translateX(8px); }
+          60% { transform: translateX(-6px); }
+          80% { transform: translateX(6px); }
+        }
+        .animate-shake { animation: shake 0.5s ease-in-out; }
+      `}</style>
+    </div>
+  );
+}
 import Home from "@/pages/Home";
 import TempEmail from "@/pages/TempEmail";
 import KeyChecker from "@/pages/KeyChecker";
@@ -141,4 +236,12 @@ function App() {
   );
 }
 
-export default App;
+function Root() {
+  return (
+    <PasswordGate>
+      <App />
+    </PasswordGate>
+  );
+}
+
+export default Root;
