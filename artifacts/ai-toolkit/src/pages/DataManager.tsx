@@ -155,6 +155,7 @@ function AccountsPanel() {
         </select>
         <input value={filter.search} onChange={e => setFilter(f => ({...f,search:e.target.value}))} placeholder="搜索 email/备注…" className="bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-sm text-white placeholder-gray-600 flex-1 min-w-32" />
         <div className="flex gap-1 ml-auto">
+          <button onClick={load} title="刷新数据" className="px-3 py-1.5 bg-[#21262d] border border-[#30363d] rounded text-xs text-gray-300 hover:bg-[#30363d] hover:text-white">🔄 刷新</button>
           <button onClick={() => exportAccounts("txt")} className="px-3 py-1.5 bg-[#21262d] border border-[#30363d] rounded text-xs text-gray-300 hover:bg-[#30363d]">导出 TXT</button>
           <button onClick={() => exportAccounts("csv")} className="px-3 py-1.5 bg-[#21262d] border border-[#30363d] rounded text-xs text-gray-300 hover:bg-[#30363d]">导出 CSV</button>
           <button onClick={() => exportAccounts("json")} className="px-3 py-1.5 bg-[#21262d] border border-[#30363d] rounded text-xs text-gray-300 hover:bg-[#30363d]">导出 JSON</button>

@@ -133,13 +133,82 @@ export default function OutlookManager() {
   };
 
   // Step 3 – OAuth2
-  const [clientId,  setClientId]      = useState("9e5f94bc-e8a4-4e73-b8be-63364c29d753"); // 常用公共 client_id
+  const [clientId,  setClientId]      = useState("9e5f94bc-e8a4-4e73-b8be-63364c29d753");
   const [refreshTok, setRefreshTok]   = useState("");
   const [tenantId,  setTenantId]      = useState("common");
   const [accessTok, setAccessTok]     = useState("");
   const [oauthBusy, setOauthBusy]     = useState(false);
   const [oauthErr,  setOauthErr]      = useState("");
   const [profile,   setProfile]       = useState<Profile|null>(null);
+
+  // Device Code Flow 状态
+  const [dcBusy,    setDcBusy]        = useState(false);
+  const [dcCode,    setDcCode]        = useState("");      // user_code（显示给用户的短码）
+  const [dcDevice,  setDcDevice]      = useState("");      // device_code（内部轮询用）
+  const [dcUri,     setDcUri]         = useState("");      // verification_uri
+  const [dcExpiry,  setDcExpiry]      = useState(0);       // 过期时间戳
+  const [dcStatus,  setDcStatus]      = useState<"idle"|"waiting"|"done"|"error">("idle");
+  const [dcErr,     setDcErr]         = useState("");
+  const [dcInterval,setDcInterval]    = useState(5);
+  const dcPollRef   = useRef<ReturnType<typeof setInterval>|null>(null);
+
+  const stopDcPoll = () => { if (dcPollRef.current) { clearInterval(dcPollRef.current); dcPollRef.current = null; } };
+
+  const startDeviceCodeFlow = async () => {
+    setDcBusy(true); setDcErr(""); setDcCode(""); setDcDevice(""); setDcStatus("idle");
+    stopDcPoll();
+    try {
+      const r = await fetch("/api/tools/outlook/device-code", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId, tenantId }),
+      });
+      const d = await r.json() as {
+        success: boolean; deviceCode?: string; userCode?: string;
+        verificationUri?: string; expiresIn?: number; interval?: number; error?: string;
+      };
+      if (!d.success || !d.deviceCode) { setDcErr(d.error ?? "获取设备码失败"); setDcBusy(false); return; }
+      setDcCode(d.userCode ?? "");
+      setDcDevice(d.deviceCode);
+      setDcUri(d.verificationUri ?? "https://microsoft.com/devicelogin");
+      setDcExpiry(Date.now() + (d.expiresIn ?? 900) * 1000);
+      setDcInterval(d.interval ?? 5);
+      setDcStatus("waiting");
+      setDcBusy(false);
+
+      // 开始轮询
+      const pollMs = Math.max((d.interval ?? 5) * 1000, 5000);
+      const savedDeviceCode = d.deviceCode;
+      dcPollRef.current = setInterval(async () => {
+        if (Date.now() > (d.expiresIn ?? 900) * 1000 + Date.now()) { stopDcPoll(); setDcStatus("error"); setDcErr("授权码已过期"); return; }
+        try {
+          const pr = await fetch("/api/tools/outlook/device-poll", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ deviceCode: savedDeviceCode, clientId, tenantId }),
+          });
+          const pd = await pr.json() as {
+            success: boolean; pending?: boolean; slowDown?: boolean;
+            accessToken?: string; refreshToken?: string; error?: string;
+          };
+          if (pd.success && pd.accessToken) {
+            stopDcPoll();
+            setAccessTok(pd.accessToken);
+            if (pd.refreshToken) setRefreshTok(pd.refreshToken);
+            setDcStatus("done");
+            // 获取用户信息
+            try {
+              const profR = await fetch("/api/tools/outlook/profile", { headers: { "x-access-token": pd.accessToken } });
+              const profD = await profR.json() as { success: boolean; profile?: Profile };
+              if (profD.success && profD.profile) setProfile(profD.profile);
+            } catch {}
+          } else if (!pd.pending) {
+            stopDcPoll(); setDcStatus("error"); setDcErr(pd.error ?? "授权失败");
+          }
+        } catch {}
+      }, pollMs);
+    } catch (e) { setDcErr(String(e)); setDcBusy(false); }
+  };
+
+  useEffect(() => () => stopDcPoll(), []);
 
   // Step 4 – 邮件
   const [messages,  setMessages]      = useState<MailMsg[]>([]);
@@ -489,68 +558,147 @@ export default function OutlookManager() {
       {/* ── Step 3: OAuth2 ── */}
       {step === 3 && (
         <div className="space-y-4">
-          <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-5 space-y-4">
-            <h3 className="text-sm font-semibold text-gray-300">微软 OAuth2 刷新 Token</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+          {/* 成功状态 */}
+          {dcStatus === "done" && profile && (
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex items-center gap-3">
+              <span className="text-2xl">✅</span>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-emerald-300">授权成功！已获取 Access Token</p>
+                <p className="text-xs text-gray-400 mt-0.5">{profile.displayName}  ·  {profile.mail ?? profile.userPrincipalName}</p>
+              </div>
+              <button onClick={() => setStep(4)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-white text-xs font-medium shrink-0">读取收件箱 →</button>
+            </div>
+          )}
+
+          {/* ── 方法 A：设备码一键授权（推荐） ── */}
+          <div className="bg-[#161b22] border border-blue-500/20 rounded-xl p-5 space-y-4">
+            <div className="flex items-center gap-2">
+              <span className="text-base">🔒</span>
+              <h3 className="text-sm font-semibold text-white">方法一：设备码授权（推荐）</h3>
+              <span className="ml-auto text-[10px] bg-blue-500/15 border border-blue-500/30 text-blue-400 px-2 py-0.5 rounded-full">无需 Redirect URI</span>
+            </div>
+            <p className="text-xs text-gray-400 leading-relaxed">
+              点击"获取授权码"→ 在浏览器打开微软授权页面 → 输入短码登录你的 Outlook 账号 → 系统自动获取 Token，无需手动配置任何回调地址。
+            </p>
+
+            {/* ClientId / TenantId 配置 */}
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs text-gray-400 mb-1 block">Client ID <span className="text-gray-600">（预填公共ID）</span></label>
+                <label className="text-xs text-gray-500 mb-1 block">Client ID</label>
                 <input value={clientId} onChange={(e) => setClientId(e.target.value)}
-                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500" />
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1.5 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500" />
               </div>
               <div>
-                <label className="text-xs text-gray-400 mb-1 block">Tenant ID <span className="text-gray-600">（默认 common）</span></label>
+                <label className="text-xs text-gray-500 mb-1 block">Tenant ID</label>
                 <input value={tenantId} onChange={(e) => setTenantId(e.target.value)}
-                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500" />
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-2 py-1.5 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500" />
               </div>
             </div>
-            <div>
-              <label className="text-xs text-gray-400 mb-1 block">Refresh Token</label>
-              <textarea value={refreshTok} onChange={(e) => setRefreshTok(e.target.value)} rows={3}
-                placeholder="粘贴从 Microsoft 授权流程获取的 Refresh Token..."
-                className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500 resize-none" />
-            </div>
-            <button onClick={doRefresh} disabled={oauthBusy || !refreshTok || !clientId}
-              className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-all">
-              {oauthBusy ? "刷新中..." : "🔑 刷新 Access Token"}
-            </button>
-            {oauthErr && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{oauthErr}</p>}
-            {accessTok && (
+
+            {/* 获取设备码按钮 */}
+            {dcStatus === "idle" || dcStatus === "error" ? (
+              <button onClick={startDeviceCodeFlow} disabled={dcBusy}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-all flex items-center justify-center gap-2">
+                {dcBusy
+                  ? <><span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />获取授权码中...</>
+                  : "🔑 获取设备授权码"}
+              </button>
+            ) : null}
+
+            {dcErr && dcStatus === "error" && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 flex items-center gap-2">
+                <span className="text-red-400 text-xs flex-1">{dcErr}</span>
+                <button onClick={startDeviceCodeFlow} className="text-xs px-2 py-0.5 bg-red-500/20 border border-red-500/30 rounded text-red-400 hover:bg-red-500/30">重试</button>
+              </div>
+            )}
+
+            {/* 设备码显示区域 */}
+            {dcStatus === "waiting" && dcCode && (
               <div className="space-y-3">
-                {profile && (
-                  <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 flex items-center gap-3">
-                    <span className="text-xl">✅</span>
-                    <div>
-                      <p className="text-sm font-medium text-emerald-300">{profile.displayName}</p>
-                      <p className="text-xs text-gray-400">{profile.mail ?? profile.userPrincipalName}</p>
-                    </div>
+                {/* 步骤提示 */}
+                <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-3 space-y-2">
+                  <p className="text-xs font-semibold text-blue-300">按以下步骤操作：</p>
+                  <ol className="space-y-1.5 text-xs text-gray-400">
+                    <li className="flex items-start gap-2">
+                      <span className="w-4 h-4 rounded-full bg-blue-500/30 text-blue-300 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">1</span>
+                      在浏览器中打开：
+                      <a href={dcUri} target="_blank" rel="noreferrer"
+                        className="text-blue-400 underline underline-offset-2 hover:text-blue-300">
+                        {dcUri}
+                      </a>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="w-4 h-4 rounded-full bg-blue-500/30 text-blue-300 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">2</span>
+                      输入以下授权码，然后登录你的 Outlook 账号
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="w-4 h-4 rounded-full bg-blue-500/30 text-blue-300 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">3</span>
+                      授权完成后，本页面自动获取 Token（每 {dcInterval}s 检测一次）
+                    </li>
+                  </ol>
+                </div>
+
+                {/* 授权码大字展示 */}
+                <div className="bg-[#0d1117] border border-yellow-500/40 rounded-xl p-4 text-center relative">
+                  <p className="text-xs text-gray-500 mb-2">授权码（在微软页面输入）</p>
+                  <p className="text-3xl font-bold font-mono tracking-[0.3em] text-yellow-300">{dcCode}</p>
+                  <button onClick={() => copy(dcCode, "dc")}
+                    className={`mt-3 text-xs px-3 py-1 rounded border transition-all ${copied === "dc" ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-400" : "bg-[#21262d] border-[#30363d] text-gray-400 hover:text-white"}`}>
+                    {copied === "dc" ? "✓ 已复制" : "复制授权码"}
+                  </button>
+                  <div className="absolute top-2 right-2 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                    <span className="text-[10px] text-gray-600">等待授权中…</span>
                   </div>
-                )}
+                </div>
+
+                <button onClick={() => { stopDcPoll(); setDcStatus("idle"); setDcCode(""); }}
+                  className="w-full py-1.5 text-xs text-gray-500 hover:text-gray-300 border border-[#30363d] rounded-lg transition-all">
+                  取消，重新获取
+                </button>
+              </div>
+            )}
+
+            {/* 授权成功 Token 展示 */}
+            {dcStatus === "done" && accessTok && (
+              <div className="space-y-2">
                 {[
-                  { label: "Access Token (前80字符)", value: accessTok.slice(0, 80) + "...", full: accessTok, k: "at" },
-                  { label: "Refresh Token (更新后)", value: refreshTok.slice(0, 60) + "...", full: refreshTok, k: "rt" },
-                ].map(({ label, value, full, k }) => (
+                  { label: "Access Token", value: accessTok.slice(0, 60) + "...", full: accessTok, k: "at" },
+                  { label: "Refresh Token", value: refreshTok.slice(0, 60) + (refreshTok.length > 60 ? "..." : ""), full: refreshTok, k: "rt" },
+                ].map(({ label, value, full, k }) => full ? (
                   <div key={k} className="bg-[#0d1117] rounded-lg px-3 py-2 flex items-center gap-3">
-                    <span className="text-xs text-gray-500 w-36 shrink-0">{label}</span>
+                    <span className="text-xs text-gray-500 w-28 shrink-0">{label}</span>
                     <span className="text-xs font-mono text-blue-300 flex-1 truncate">{value}</span>
                     <button onClick={() => copy(full, k)} className={`text-xs px-2 py-0.5 rounded border shrink-0 ${copied === k ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-400" : "bg-[#21262d] border-[#30363d] text-gray-500 hover:text-white"}`}>
                       {copied === k ? "✓" : "复制"}
                     </button>
                   </div>
-                ))}
-                <button onClick={() => setStep(4)} className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-white text-sm font-medium">读取收件箱 → 下一步</button>
+                ) : null)}
               </div>
             )}
           </div>
 
-          <div className="bg-[#0d1117] border border-[#30363d] rounded-xl p-4">
-            <p className="text-xs font-semibold text-gray-400 mb-2">如何获取 Refresh Token</p>
-            <ol className="space-y-1 text-xs text-gray-500">
-              <li>1. 访问 <a href="https://developer.microsoft.com/en-us/graph/graph-explorer" target="_blank" className="text-blue-400">Graph Explorer</a>，登录你的 Outlook 账号</li>
-              <li>2. 点击"Consent to permissions"授权 Mail.Read 权限</li>
-              <li>3. 在浏览器开发者工具 Network 选项卡中，找到对 <code className="text-gray-300">/token</code> 的请求，获取 refresh_token</li>
-              <li>4. 或使用 <a href="https://github.com/hrhcode/outlook-batch-manager" target="_blank" className="text-blue-400">outlook-batch-manager</a> 的 OAuth2 授权页面自动获取</li>
-            </ol>
-          </div>
+          {/* ── 方法 B：手动粘贴 Refresh Token ── */}
+          <details className="bg-[#161b22] border border-[#21262d] rounded-xl overflow-hidden">
+            <summary className="px-5 py-3 text-sm font-semibold text-gray-400 cursor-pointer hover:text-gray-200 select-none flex items-center gap-2">
+              <span>🔧</span> 方法二：手动粘贴 Refresh Token（已有 Token 时使用）
+            </summary>
+            <div className="px-5 pb-5 pt-3 space-y-3 border-t border-[#21262d]">
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Refresh Token</label>
+                <textarea value={refreshTok} onChange={(e) => setRefreshTok(e.target.value)} rows={3}
+                  placeholder="粘贴从微软授权流程获取的 Refresh Token..."
+                  className="w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs font-mono text-gray-300 focus:outline-none focus:border-blue-500 resize-none" />
+              </div>
+              <button onClick={doRefresh} disabled={oauthBusy || !refreshTok || !clientId}
+                className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-all">
+                {oauthBusy ? "刷新中..." : "🔑 使用 Refresh Token 获取 Access Token"}
+              </button>
+              {oauthErr && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{oauthErr}</p>}
+            </div>
+          </details>
+
         </div>
       )}
 

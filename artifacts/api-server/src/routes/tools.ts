@@ -773,6 +773,91 @@ router.get("/tools/outlook/profile", async (req, res) => {
   }
 });
 
+// ── 微软设备码授权流程（Device Code Flow）──────────────────
+// 用户不需要 Redirect URI，只需访问 aka.ms/devicelogin 输入短码
+router.post("/tools/outlook/device-code", async (req, res) => {
+  const { clientId, tenantId } = req.body as { clientId?: string; tenantId?: string };
+  const cid = clientId || "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
+  const tid = tenantId || "common";
+  try {
+    const r = await fetch(`https://login.microsoftonline.com/${tid}/oauth2/v2.0/devicecode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: cid,
+        scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access",
+      }).toString(),
+    });
+    const data = await r.json() as {
+      device_code?: string; user_code?: string; verification_uri?: string;
+      expires_in?: number; interval?: number; message?: string;
+      error?: string; error_description?: string;
+    };
+    if (!r.ok || !data.device_code) {
+      res.json({ success: false, error: data.error_description ?? data.error ?? "获取设备码失败" });
+      return;
+    }
+    res.json({
+      success: true,
+      deviceCode: data.device_code,
+      userCode: data.user_code,
+      verificationUri: data.verification_uri,
+      expiresIn: data.expires_in ?? 900,
+      interval: data.interval ?? 5,
+      message: data.message,
+    });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+router.post("/tools/outlook/device-poll", async (req, res) => {
+  const { deviceCode, clientId, tenantId } = req.body as {
+    deviceCode?: string; clientId?: string; tenantId?: string;
+  };
+  if (!deviceCode) {
+    res.status(400).json({ success: false, error: "deviceCode 不能为空" });
+    return;
+  }
+  const cid = clientId || "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
+  const tid = tenantId || "common";
+  try {
+    const r = await fetch(`https://login.microsoftonline.com/${tid}/oauth2/v2.0/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        client_id: cid,
+        device_code: deviceCode,
+      }).toString(),
+    });
+    const data = await r.json() as {
+      access_token?: string; refresh_token?: string; expires_in?: number;
+      token_type?: string; error?: string; error_description?: string;
+    };
+    if (data.error === "authorization_pending") {
+      res.json({ success: false, pending: true, error: "等待用户授权" });
+      return;
+    }
+    if (data.error === "slow_down") {
+      res.json({ success: false, pending: true, slowDown: true, error: "请求太频繁，稍候" });
+      return;
+    }
+    if (!r.ok || !data.access_token) {
+      res.json({ success: false, error: data.error_description ?? data.error ?? "授权失败或已过期" });
+      return;
+    }
+    res.json({
+      success: true,
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? "",
+      expiresIn: data.expires_in,
+    });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
 // ── Outlook 注册：后台任务 + 轮询 ─────────────────────────
 // 避免代理/浏览器 12s 断连问题，改为异步任务模式
 
