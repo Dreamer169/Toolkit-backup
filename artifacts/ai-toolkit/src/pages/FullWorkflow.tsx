@@ -148,12 +148,12 @@ export default function FullWorkflow() {
         const d = await r.json();
         if (!d.success) { staleTicks++; if (staleTicks > 10) { clearInterval(pollRef.current!); setPhase("error"); } return; }
         staleTicks = 0;
-        const newLines: { text: string; offset?: number }[] = d.logs ?? d.lines ?? [];
+        const newLines: { type?: string; message?: string; text?: string }[] = d.logs ?? d.lines ?? [];
         newLines.forEach((l) => {
-          addLog(l.text);
-          if ((l.offset ?? 0) >= sinceRef.current) sinceRef.current = (l.offset ?? 0) + 1;
+          const txt = l.message ?? l.text ?? "";
+          if (txt) addLog(txt);
         });
-        if (d.nextSince) sinceRef.current = d.nextSince;
+        if (d.nextSince != null) sinceRef.current = d.nextSince;
         if (d.status === "done") {
           clearInterval(pollRef.current!);
           const ok = (d.accounts?.length ?? 0) > 0;
