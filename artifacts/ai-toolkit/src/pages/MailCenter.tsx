@@ -760,46 +760,72 @@ export default function MailCenter() {
             </div>
 
             {/* 账号列表 */}
-            <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2">
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
               {batchOAuth.accounts.map(acc => {
                 const isDone    = acc.status === "done";
                 const isPending = acc.status === "pending";
                 const isError   = acc.status === "error" || acc.status === "expired";
+                // 从账号列表查出密码
+                const fullAcc   = accounts.find(a => a.id === acc.accountId);
+                const pw        = fullAcc?.password ?? "";
+                const codeKey   = `bo-${acc.accountId}`;
+                const pwKey     = `bopw-${acc.accountId}`;
                 return (
                   <div key={acc.accountId}
-                    className={`rounded-lg border px-3 py-2.5 flex items-start gap-3 ${
-                      isDone    ? "border-emerald-600/40 bg-emerald-900/10" :
-                      isError   ? "border-red-600/30 bg-red-900/10" :
-                      "border-[#30363d] bg-[#161b22]"
+                    className={`rounded-lg border p-3 ${
+                      isDone  ? "border-emerald-600/40 bg-emerald-900/10" :
+                      isError ? "border-red-600/30 bg-red-900/10" :
+                                "border-[#30363d] bg-[#161b22]"
                     }`}>
-                    {/* 状态图标 */}
-                    <span className="mt-0.5 text-base shrink-0">
-                      {isDone ? "✅" : isError ? "❌" : "⏳"}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-mono text-gray-200 truncate">{acc.email}</p>
-                      {isError && <p className="text-[10px] text-red-400 mt-0.5">{acc.errorMsg}</p>}
-                      {isDone  && <p className="text-[10px] text-emerald-400 mt-0.5">授权成功，token 已保存</p>}
-                      {isPending && (
-                        <p className="text-[10px] text-gray-500 mt-0.5 animate-pulse">等待授权确认…</p>
-                      )}
-                    </div>
-                    {/* 用户码 */}
-                    {acc.userCode && (
-                      <div className="shrink-0 flex items-center gap-1.5">
-                        <span className={`font-mono text-sm font-bold tracking-widest ${isDone ? "text-gray-500 line-through" : "text-white"}`}>
-                          {acc.userCode}
-                        </span>
-                        {!isDone && (
+
+                    {/* 行一：状态 + 用户码（最重要，顶部） */}
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <span className="text-base shrink-0">
+                        {isDone ? "✅" : isError ? "❌" : "⏳"}
+                      </span>
+                      {/* 用户码 + 复制 + 打开授权页 */}
+                      {acc.userCode && !isDone && (
+                        <div className="flex items-center gap-1.5 ml-auto">
+                          <span className="font-mono text-base font-bold tracking-widest text-white">
+                            {acc.userCode}
+                          </span>
                           <button
-                            onClick={() => { navigator.clipboard.writeText(acc.userCode); setCopied(`bo-${acc.accountId}`); setTimeout(() => setCopied(""), 1500); }}
-                            className="text-[10px] px-1.5 py-0.5 bg-[#21262d] hover:bg-[#30363d] rounded text-gray-400 hover:text-white transition-colors"
+                            onClick={() => { navigator.clipboard.writeText(acc.userCode); setCopied(codeKey); setTimeout(() => setCopied(""), 1500); }}
+                            className="text-[10px] px-2 py-0.5 bg-blue-600/30 hover:bg-blue-600/60 border border-blue-500/30 rounded text-blue-300 hover:text-white transition-colors"
                           >
-                            {copied === `bo-${acc.accountId}` ? "✓" : "复制"}
+                            {copied === codeKey ? "✓ 已复制" : "复制码"}
                           </button>
-                        )}
+                          <a href={acc.verificationUri} target="_blank" rel="noopener noreferrer"
+                            className="text-[10px] px-2 py-0.5 bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] rounded text-gray-400 hover:text-white transition-colors">
+                            授权页 ↗
+                          </a>
+                        </div>
+                      )}
+                      {isDone && <span className="text-[10px] text-emerald-400 ml-auto">token 已保存 ✓</span>}
+                    </div>
+
+                    {/* 行二：完整邮箱（不截断） */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-gray-500 shrink-0">账号</span>
+                      <span className="text-xs font-mono text-gray-200 select-all break-all">{acc.email}</span>
+                    </div>
+
+                    {/* 行三：密码（复制） */}
+                    {pw && !isDone && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] text-gray-500 shrink-0">密码</span>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(pw); setCopied(pwKey); setTimeout(() => setCopied(""), 1500); }}
+                          className="text-xs font-mono text-gray-300 hover:text-white text-left break-all"
+                        >
+                          {copied === pwKey ? <span className="text-emerald-400">✓ 已复制</span> : pw}
+                        </button>
                       </div>
                     )}
+
+                    {/* 状态文字 */}
+                    {isError && <p className="text-[10px] text-red-400 mt-1.5">{acc.errorMsg}</p>}
+                    {isPending && <p className="text-[10px] text-gray-600 mt-1 animate-pulse">⏳ 等待授权中…</p>}
                   </div>
                 );
               })}
