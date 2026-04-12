@@ -1140,12 +1140,47 @@ class PatchrightController(BaseController):
                         f.write(resp.read())
                 print(f"[captcha] 音频已下载 ({os.path.getsize(tmp_audio)} bytes)", flush=True)
 
-            # 音频转写 (openai-whisper 已移除以减小部署镜像大小)
-            # 主要 CAPTCHA 方案：LainsNL 三步点击法（无需音频转写，成功率 100%）
-            # 如需音频转写降级：在 captcha_solver.py 中配置 2captcha/CapMonster
-            print("[captcha] ⚠ 音频转写功能已禁用（CAPTCHA 主流程不需要）", flush=True)
-            print("[captcha] 请在完整工作流页配置 2captcha/CapMonster 作为备用打码服务", flush=True)
+            # ── 音频转写：Google 免费 STT（speech_recognition + 系统 ffmpeg）────
             transcript = ""
+            try:
+                import speech_recognition as sr
+                import subprocess as _sp
+
+                # 找 ffmpeg（系统可能在 Nix store 里）
+                _ffmpeg = None
+                for _fp in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg",
+                            "/nix/store/ynlnyy6rn70kvzamy3b40bp3qlz70mn0-ffmpeg-full-7.1.1-bin/bin/ffmpeg"]:
+                    if os.path.isfile(_fp):
+                        _ffmpeg = _fp
+                        break
+                if not _ffmpeg:
+                    _result = _sp.run(["which", "ffmpeg"], capture_output=True, text=True, timeout=5)
+                    _fp = _result.stdout.strip()
+                    if _fp and os.path.isfile(_fp):
+                        _ffmpeg = _fp
+
+                # 将 mp3/任意格式 → wav（speech_recognition 只接受 wav）
+                wav_file = tmp_audio.replace(".mp3", ".wav").replace(".ogg", ".wav")
+                if not wav_file.endswith(".wav"):
+                    wav_file = tmp_audio + ".wav"
+
+                if _ffmpeg:
+                    _sp.run([_ffmpeg, "-y", "-i", tmp_audio, "-ar", "16000", "-ac", "1",
+                             "-acodec", "pcm_s16le", wav_file],
+                            capture_output=True, timeout=20)
+                    print(f"[captcha] ffmpeg 转换完成: {wav_file}", flush=True)
+                else:
+                    wav_file = tmp_audio  # 直接尝试（若本身是 wav）
+
+                # Google 免费 STT（无需 API key）
+                _recognizer = sr.Recognizer()
+                with sr.AudioFile(wav_file) as _src:
+                    _audio_data = _recognizer.record(_src)
+                transcript = _recognizer.recognize_google(_audio_data, language="en-US")
+                print(f"[captcha] ✅ Google STT 转写成功: '{transcript}'", flush=True)
+            except Exception as _stt_err:
+                print(f"[captcha] ⚠ Google STT 失败: {_stt_err}", flush=True)
+                transcript = ""
 
             if not transcript:
                 print("[captcha] ⚠ 无转写内容，音频路径降级失败", flush=True)
