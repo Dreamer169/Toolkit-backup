@@ -914,6 +914,185 @@ router.post("/tools/outlook/device-poll", async (req, res) => {
   }
 });
 
+// ── 批量设备码 OAuth 授权 ──────────────────────────────────────────────────
+// 为所有无 token 的 Outlook 账号同时申请设备码，前端展示所有码，
+// 用户逐个在浏览器授权后，后台自动轮询并将 refresh_token 存入数据库。
+
+interface BatchOAuthSession {
+  accountId: number;
+  email: string;
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  status: "pending" | "done" | "expired" | "error";
+  accessToken?: string;
+  refreshToken?: string;
+  errorMsg?: string;
+  createdAt: number;
+}
+
+const batchOAuthSessions = new Map<string, BatchOAuthSession[]>();
+
+function cleanOldBatchSessions() {
+  const cutoff = Date.now() - 20 * 60 * 1000; // 20 分钟
+  for (const [k, sessions] of batchOAuthSessions) {
+    if (sessions[0]?.createdAt < cutoff) batchOAuthSessions.delete(k);
+  }
+}
+
+// POST /tools/outlook/batch-oauth/start
+// 为没有 token 的账号批量申请设备码
+router.post("/tools/outlook/batch-oauth/start", async (req, res) => {
+  const { accountIds } = req.body as { accountIds?: number[] };
+  try {
+    cleanOldBatchSessions();
+    const { query: dbQ } = await import("../db.js");
+
+    // 查出所有没有 token 的 Outlook 账号（或指定 ID）
+    let rows: { id: number; email: string }[];
+    if (accountIds?.length) {
+      rows = await dbQ<{ id: number; email: string }>(
+        "SELECT id, email FROM accounts WHERE platform='outlook' AND id = ANY($1::int[])",
+        [accountIds]
+      );
+    } else {
+      rows = await dbQ<{ id: number; email: string }>(
+        "SELECT id, email FROM accounts WHERE platform='outlook' AND (token IS NULL OR token='') AND (refresh_token IS NULL OR refresh_token='')"
+      );
+    }
+
+    if (!rows.length) {
+      res.json({ success: false, error: "没有需要授权的账号" });
+      return;
+    }
+
+    const CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
+    const SCOPE = "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access";
+
+    // 并发为每个账号申请设备码（微软不限制并发）
+    const sessionList: BatchOAuthSession[] = [];
+    await Promise.allSettled(rows.map(async (acc) => {
+      try {
+        const r = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ client_id: CLIENT_ID, scope: SCOPE }).toString(),
+        });
+        const d = await r.json() as {
+          device_code?: string; user_code?: string; verification_uri?: string;
+          error?: string; error_description?: string;
+        };
+        if (!d.device_code || !d.user_code) {
+          sessionList.push({
+            accountId: acc.id, email: acc.email,
+            deviceCode: "", userCode: "", verificationUri: "",
+            status: "error", errorMsg: d.error_description ?? d.error ?? "获取设备码失败",
+            createdAt: Date.now(),
+          });
+        } else {
+          sessionList.push({
+            accountId: acc.id, email: acc.email,
+            deviceCode: d.device_code, userCode: d.user_code,
+            verificationUri: d.verification_uri ?? "https://microsoft.com/devicelogin",
+            status: "pending", createdAt: Date.now(),
+          });
+        }
+      } catch (e) {
+        sessionList.push({
+          accountId: acc.id, email: acc.email,
+          deviceCode: "", userCode: "", verificationUri: "",
+          status: "error", errorMsg: String(e), createdAt: Date.now(),
+        });
+      }
+    }));
+
+    const sessionId = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    batchOAuthSessions.set(sessionId, sessionList);
+
+    res.json({
+      success: true,
+      sessionId,
+      accounts: sessionList.map(s => ({
+        accountId: s.accountId,
+        email: s.email,
+        userCode: s.userCode,
+        verificationUri: s.verificationUri,
+        status: s.status,
+        errorMsg: s.errorMsg,
+      })),
+    });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+// POST /tools/outlook/batch-oauth/poll
+// 轮询所有 pending 的设备码，发现授权完成后立即存入数据库
+router.post("/tools/outlook/batch-oauth/poll", async (req, res) => {
+  const { sessionId } = req.body as { sessionId?: string };
+  if (!sessionId || !batchOAuthSessions.has(sessionId)) {
+    res.status(404).json({ success: false, error: "会话不存在或已过期" });
+    return;
+  }
+  const sessions = batchOAuthSessions.get(sessionId)!;
+  const CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
+  const { execute: dbE } = await import("../db.js");
+
+  // 并发轮询所有 pending 的账号
+  await Promise.allSettled(sessions.filter(s => s.status === "pending").map(async (s) => {
+    try {
+      const r = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          client_id: CLIENT_ID,
+          device_code: s.deviceCode,
+        }).toString(),
+      });
+      const d = await r.json() as {
+        access_token?: string; refresh_token?: string;
+        error?: string; error_description?: string;
+      };
+      if (d.access_token) {
+        s.status = "done";
+        s.accessToken = d.access_token;
+        s.refreshToken = d.refresh_token ?? "";
+        // 立即存入数据库
+        await dbE(
+          "UPDATE accounts SET token=$1, refresh_token=$2, status='active', updated_at=NOW() WHERE id=$3",
+          [d.access_token, d.refresh_token ?? "", s.accountId]
+        );
+      } else if (d.error === "expired_token" || d.error === "code_expired") {
+        s.status = "expired";
+        s.errorMsg = "设备码已过期（15分钟限制），请重新发起授权";
+      } else if (d.error && d.error !== "authorization_pending" && d.error !== "slow_down") {
+        s.status = "error";
+        s.errorMsg = d.error_description ?? d.error;
+      }
+      // authorization_pending / slow_down → 继续等待，不修改 status
+    } catch { /* 网络错误，下次继续轮询 */ }
+  }));
+
+  const pending = sessions.filter(s => s.status === "pending").length;
+  const done    = sessions.filter(s => s.status === "done").length;
+  const errors  = sessions.filter(s => s.status === "error" || s.status === "expired").length;
+
+  res.json({
+    success: true,
+    sessionId,
+    pending, done, errors,
+    allFinished: pending === 0,
+    accounts: sessions.map(s => ({
+      accountId: s.accountId,
+      email: s.email,
+      userCode: s.userCode,
+      status: s.status,
+      errorMsg: s.errorMsg,
+    })),
+  });
+});
+
 // ── Outlook 注册：后台任务 + 轮询 ─────────────────────────
 // 避免代理/浏览器 12s 断连问题，改为异步任务模式
 

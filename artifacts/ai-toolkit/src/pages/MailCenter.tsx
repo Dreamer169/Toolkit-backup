@@ -40,6 +40,19 @@ interface DeviceState {
   verificationUri: string;
   deviceCode: string;
 }
+interface BatchOAuthAccount {
+  accountId: number;
+  email: string;
+  userCode: string;
+  verificationUri: string;
+  status: "pending" | "done" | "expired" | "error";
+  errorMsg?: string;
+}
+interface BatchOAuthState {
+  sessionId: string;
+  accounts: BatchOAuthAccount[];
+  open: boolean;
+}
 
 function extractCode(text: string): string {
   const m6  = text.match(/\b(\d{6,8})\b/);
@@ -76,7 +89,10 @@ export default function MailCenter() {
   const [batchResults, setBatchResults] = useState<{ email: string; ok: boolean; error?: string }[]>([]);
   const [verifyResults, setVerifyResults] = useState<VerifyResult[]>([]);
   const [verifying, setVerifying]         = useState(false);
+  const [batchOAuth, setBatchOAuth]       = useState<BatchOAuthState | null>(null);
+  const [batchOAuthBusy, setBatchOAuthBusy] = useState(false);
   const pollRef                           = useRef<ReturnType<typeof setInterval> | null>(null);
+  const batchPollRef                      = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadAccounts = useCallback(async () => {
     const d = await fetch(`${API}/tools/outlook/accounts`).then(r => r.json()).catch(() => ({}));
@@ -253,7 +269,47 @@ export default function MailCenter() {
     }, 4000);
   };
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    if (batchPollRef.current) clearInterval(batchPollRef.current);
+  }, []);
+
+  // ── 批量设备码 OAuth 授权 ─────────────────────────────────────────────────
+  const startBatchOAuth = async (ids?: number[]) => {
+    setBatchOAuthBusy(true);
+    const d = await fetch(`${API}/tools/outlook/batch-oauth/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(ids?.length ? { accountIds: ids } : {}),
+    }).then(r => r.json()).catch(() => ({ success: false, error: "网络错误" }));
+    setBatchOAuthBusy(false);
+    if (!d.success) { alert(d.error ?? "发起批量授权失败"); return; }
+    setBatchOAuth({ sessionId: d.sessionId, accounts: d.accounts ?? [], open: true });
+    // 开始轮询
+    if (batchPollRef.current) clearInterval(batchPollRef.current);
+    batchPollRef.current = setInterval(async () => {
+      const p = await fetch(`${API}/tools/outlook/batch-oauth/poll`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: d.sessionId }),
+      }).then(r => r.json()).catch(() => null);
+      if (!p?.success) return;
+      setBatchOAuth(prev => prev ? { ...prev, accounts: p.accounts ?? prev.accounts } : prev);
+      if (p.allFinished) {
+        clearInterval(batchPollRef.current!); batchPollRef.current = null;
+        await loadAccounts();
+      } else if (p.done > 0) {
+        // 有账号刚完成，顺便刷新账号列表
+        await loadAccounts();
+      }
+    }, 4000);
+  };
+
+  const closeBatchOAuth = () => {
+    if (batchPollRef.current) { clearInterval(batchPollRef.current); batchPollRef.current = null; }
+    setBatchOAuth(null);
+    loadAccounts();
+  };
 
   // 有 OAuth token → Graph API（最快）
   const hasOAuth  = (acc: Account) => !!(acc.token || acc.refresh_token);
@@ -289,6 +345,17 @@ export default function MailCenter() {
               >✕</button>
             )}
           </div>
+          {/* 批量 OAuth 授权按钮 */}
+          {accounts.some(a => !hasOAuth(a)) && (
+            <button
+              onClick={() => startBatchOAuth()}
+              disabled={batchOAuthBusy}
+              className="w-full py-1.5 bg-emerald-700/60 hover:bg-emerald-700/80 disabled:opacity-50 rounded text-xs text-white font-medium transition-colors"
+              title="为所有无 token 的账号批量发起设备码 OAuth 授权"
+            >
+              {batchOAuthBusy ? "发起中…" : "🔑 批量 OAuth 授权"}
+            </button>
+          )}
           {batchResults.length > 0 && (
             <div className="space-y-0.5 max-h-24 overflow-y-auto">
               {batchResults.map((r, i) => (
@@ -597,6 +664,101 @@ export default function MailCenter() {
           </>
         )}
       </main>
+
+      {/* ─── 批量 OAuth 授权弹窗 ─────────────────────────────────────────── */}
+      {batchOAuth?.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#0d1117] border border-[#30363d] rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[80vh]">
+            {/* 头部 */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#21262d]">
+              <div>
+                <h2 className="text-sm font-semibold text-white">🔑 批量 OAuth 授权</h2>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  {batchOAuth.accounts.filter(a => a.status === "pending").length} 个账号待授权 ·
+                  {" "}{batchOAuth.accounts.filter(a => a.status === "done").length} 个已完成
+                </p>
+              </div>
+              <button onClick={closeBatchOAuth}
+                className="text-gray-500 hover:text-white px-2 py-1 rounded hover:bg-[#21262d] text-xs">✕ 关闭</button>
+            </div>
+
+            {/* 说明 */}
+            <div className="px-5 py-3 bg-blue-900/10 border-b border-[#21262d]">
+              <p className="text-[11px] text-blue-300 leading-5">
+                1. 点击下方按钮打开微软授权页面<br/>
+                2. 逐个复制「用户码」粘贴到授权页，并用对应账号密码登录<br/>
+                3. 后台每 4 秒自动检测，授权完成后自动存储 token 并显示 ✓
+              </p>
+              <a
+                href={batchOAuth.accounts.find(a => a.status === "pending")?.verificationUri ?? "https://microsoft.com/devicelogin"}
+                target="_blank" rel="noopener noreferrer"
+                className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white font-medium transition-colors"
+              >
+                🌐 打开微软授权页面
+              </a>
+            </div>
+
+            {/* 账号列表 */}
+            <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2">
+              {batchOAuth.accounts.map(acc => {
+                const isDone    = acc.status === "done";
+                const isPending = acc.status === "pending";
+                const isError   = acc.status === "error" || acc.status === "expired";
+                return (
+                  <div key={acc.accountId}
+                    className={`rounded-lg border px-3 py-2.5 flex items-start gap-3 ${
+                      isDone    ? "border-emerald-600/40 bg-emerald-900/10" :
+                      isError   ? "border-red-600/30 bg-red-900/10" :
+                      "border-[#30363d] bg-[#161b22]"
+                    }`}>
+                    {/* 状态图标 */}
+                    <span className="mt-0.5 text-base shrink-0">
+                      {isDone ? "✅" : isError ? "❌" : "⏳"}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-mono text-gray-200 truncate">{acc.email}</p>
+                      {isError && <p className="text-[10px] text-red-400 mt-0.5">{acc.errorMsg}</p>}
+                      {isDone  && <p className="text-[10px] text-emerald-400 mt-0.5">授权成功，token 已保存</p>}
+                      {isPending && (
+                        <p className="text-[10px] text-gray-500 mt-0.5 animate-pulse">等待授权确认…</p>
+                      )}
+                    </div>
+                    {/* 用户码 */}
+                    {acc.userCode && (
+                      <div className="shrink-0 flex items-center gap-1.5">
+                        <span className={`font-mono text-sm font-bold tracking-widest ${isDone ? "text-gray-500 line-through" : "text-white"}`}>
+                          {acc.userCode}
+                        </span>
+                        {!isDone && (
+                          <button
+                            onClick={() => { navigator.clipboard.writeText(acc.userCode); setCopied(`bo-${acc.accountId}`); setTimeout(() => setCopied(""), 1500); }}
+                            className="text-[10px] px-1.5 py-0.5 bg-[#21262d] hover:bg-[#30363d] rounded text-gray-400 hover:text-white transition-colors"
+                          >
+                            {copied === `bo-${acc.accountId}` ? "✓" : "复制"}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 底部 */}
+            <div className="px-5 py-3 border-t border-[#21262d] flex items-center gap-3">
+              {batchOAuth.accounts.every(a => a.status !== "pending") ? (
+                <p className="text-xs text-emerald-400 font-medium">✅ 所有授权已完成</p>
+              ) : (
+                <p className="text-[11px] text-gray-500 animate-pulse">后台轮询中，等待微软确认授权…</p>
+              )}
+              <button onClick={closeBatchOAuth}
+                className="ml-auto px-4 py-1.5 bg-[#21262d] hover:bg-[#30363d] rounded text-xs text-gray-300 transition-colors">
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
