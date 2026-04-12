@@ -1602,6 +1602,26 @@ function ropcStatus(err?: string, desc?: string): string {
   return err;
 }
 
+// IMAP 登录测试（check_only=true，仅 login/logout，不拉邮件）
+async function imapCheckLogin(email: string, password: string): Promise<{ ok: boolean; error?: string }> {
+  const { spawn } = await import("child_process");
+  const scriptPath = new URL("../../outlook_imap.py", import.meta.url).pathname;
+  return new Promise((resolve) => {
+    const params = JSON.stringify({ email, password, limit: 1, folder: "INBOX", search: "", check_only: true });
+    const child = spawn("python3", [scriptPath, params], { env: { ...process.env, PYTHONUNBUFFERED: "1" } });
+    let out = "";
+    child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+    child.on("close", () => {
+      try {
+        const r = JSON.parse(out.trim()) as { success: boolean; error?: string };
+        resolve(r.success ? { ok: true } : { ok: false, error: r.error });
+      } catch { resolve({ ok: false, error: `解析失败: ${out.slice(0, 100)}` }); }
+    });
+    child.on("error", (e) => resolve({ ok: false, error: e.message }));
+    setTimeout(() => { child.kill(); resolve({ ok: false, error: "IMAP 超时" }); }, 20000);
+  });
+}
+
 router.post("/tools/outlook/verify-accounts", async (req, res) => {
   const { ids } = req.body as { ids?: number[] };
   try {
@@ -1612,45 +1632,30 @@ router.post("/tools/outlook/verify-accounts", async (req, res) => {
         : `SELECT id, email, password FROM accounts WHERE platform='outlook'`,
       ids?.length ? [ids] : []
     );
-    const results: Array<{ id: number; email: string; status: string; accessToken?: string; error?: string }> = [];
+    const results: Array<{ id: number; email: string; status: string; error?: string }> = [];
     for (const acc of rows) {
       if (!acc.password) {
         results.push({ id: acc.id, email: acc.email, status: "no_password", error: "数据库无密码" });
         continue;
       }
-      try {
-        const tr = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            grant_type: "password", client_id: ROPC_CID,
-            username: acc.email, password: acc.password, scope: ROPC_SCO,
-          }).toString(),
-        });
-        const td = await tr.json() as { access_token?: string; refresh_token?: string; error?: string; error_description?: string };
-        const st = ropcStatus(td.error, td.error_description);
-        if (td.access_token) {
-          // 顺手刷新 token
-          await dbE(
-            "UPDATE accounts SET token=$1, refresh_token=$2, status='active', updated_at=NOW() WHERE id=$3",
-            [td.access_token, td.refresh_token ?? null, acc.id]
-          );
-          results.push({ id: acc.id, email: acc.email, status: "valid", accessToken: "✓" });
-        } else {
-          // 更新 status 字段
-          const dbStatus = st === "not_exist" ? "invalid" : st === "wrong_password" ? "password_err" : "active";
-          await dbE("UPDATE accounts SET status=$1, updated_at=NOW() WHERE id=$2", [dbStatus, acc.id]);
-          results.push({ id: acc.id, email: acc.email, status: st, error: (td.error_description ?? "").slice(0, 100) });
-        }
-      } catch (e) {
-        results.push({ id: acc.id, email: acc.email, status: "error", error: String(e) });
+      const chk = await imapCheckLogin(acc.email, acc.password);
+      if (chk.ok) {
+        await dbE("UPDATE accounts SET status='active', updated_at=NOW() WHERE id=$1", [acc.id]);
+        results.push({ id: acc.id, email: acc.email, status: "valid" });
+      } else {
+        const err = chk.error ?? "";
+        let status = "error";
+        if (/AUTHENTICATIONFAILED|认证失败/i.test(err)) status = "wrong_password";
+        else if (/禁用基础密码|basic auth/i.test(err))   status = "imap_disabled";
+        else if (/refused|拒绝/i.test(err))               status = "connection_error";
+        await dbE("UPDATE accounts SET status=$1, updated_at=NOW() WHERE id=$2", [status, acc.id]);
+        results.push({ id: acc.id, email: acc.email, status, error: err.slice(0, 120) });
       }
     }
-    const valid   = results.filter(r => r.status === "valid").length;
-    const invalid = results.filter(r => r.status === "not_exist").length;
-    const mfa     = results.filter(r => r.status === "need_mfa").length;
-    const pwErr   = results.filter(r => r.status === "wrong_password").length;
-    res.json({ success: true, results, total: rows.length, valid, invalid, mfa, pwErr });
+    const valid    = results.filter(r => r.status === "valid").length;
+    const pwErr    = results.filter(r => r.status === "wrong_password").length;
+    const disabled = results.filter(r => r.status === "imap_disabled").length;
+    res.json({ success: true, results, total: rows.length, valid, pwErr, imap_disabled: disabled });
   } catch (e: unknown) {
     res.status(500).json({ success: false, error: String(e) });
   }

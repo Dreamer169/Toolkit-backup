@@ -162,19 +162,39 @@ def fetch_inbox(address: str, password: str, limit: int = 25, folder: str = "INB
         return {"success": False, "error": str(e)}
 
 
+def check_login(address: str, password: str) -> dict:
+    """仅做 IMAP 登录/退出测试，不拉取邮件。"""
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        mail.login(address, password)
+        mail.logout()
+        return {"success": True}
+    except imaplib.IMAP4.error as e:
+        err = str(e)
+        msg = f"IMAP 登录失败：{err}"
+        if "AUTHENTICATIONFAILED" in err.upper():
+            msg = "IMAP 认证失败：密码错误或账号不存在"
+        return {"success": False, "error": msg}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(json.dumps({"success": False, "error": "缺少参数"}))
         sys.exit(1)
     try:
         params = json.loads(sys.argv[1])
-        result = fetch_inbox(
-            params["email"],
-            params["password"],
-            params.get("limit", 25),
-            params.get("folder", "INBOX"),
-            params.get("search", ""),
-        )
+        if params.get("check_only"):
+            result = check_login(params["email"], params["password"])
+        else:
+            result = fetch_inbox(
+                params["email"],
+                params["password"],
+                params.get("limit", 25),
+                params.get("folder", "INBOX"),
+                params.get("search", ""),
+            )
     except Exception as e:
         result = {"success": False, "error": str(e)}
     print(json.dumps(result, ensure_ascii=False))

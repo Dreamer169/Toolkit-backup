@@ -204,13 +204,12 @@ export default function MailCenter() {
   const verifyStatus = (id: number) => verifyResults.find(v => v.id === id);
   const verifyBadge = (st: string) => {
     const map: Record<string, { label: string; cls: string }> = {
-      valid:          { label: "有效",   cls: "text-emerald-400" },
-      not_exist:      { label: "不存在", cls: "text-red-400" },
-      wrong_password: { label: "密码错", cls: "text-red-400" },
-      need_mfa:       { label: "需MFA",  cls: "text-amber-400" },
-      blocked_ca:     { label: "已封",   cls: "text-red-500" },
-      error:          { label: "错误",   cls: "text-gray-500" },
-      no_password:    { label: "无密码", cls: "text-gray-500" },
+      valid:            { label: "IMAP✓",   cls: "text-emerald-400" },
+      wrong_password:   { label: "密码错",  cls: "text-red-400" },
+      imap_disabled:    { label: "IMAP关闭", cls: "text-amber-400" },
+      connection_error: { label: "连接失败", cls: "text-red-400" },
+      error:            { label: "错误",    cls: "text-gray-500" },
+      no_password:      { label: "无密码",  cls: "text-gray-500" },
     };
     return map[st] ?? { label: st, cls: "text-gray-500" };
   };
@@ -275,15 +274,6 @@ export default function MailCenter() {
             <span className="text-xs text-gray-600">{accounts.length} 个</span>
           </div>
           <div className="flex gap-1.5">
-            {unAuthCount > 0 && (
-              <button
-                onClick={autoAuthAll}
-                disabled={authBusy === "all" || verifying}
-                className="flex-1 py-1.5 bg-emerald-600/80 hover:bg-emerald-600 disabled:opacity-50 rounded text-xs text-white font-medium transition-colors"
-              >
-                {authBusy === "all" ? "授权中…" : `⚡ 一键授权 (${unAuthCount})`}
-              </button>
-            )}
             <button
               onClick={verifyAll}
               disabled={verifying || accounts.length === 0}
@@ -291,6 +281,13 @@ export default function MailCenter() {
             >
               {verifying ? "验证中…" : "🔍 批量验证"}
             </button>
+            {verifyResults.length > 0 && (
+              <button
+                onClick={() => setVerifyResults([])}
+                className="px-2 py-1.5 bg-[#21262d] hover:bg-[#30363d] rounded text-xs text-gray-400 transition-colors"
+                title="清除验证结果"
+              >✕</button>
+            )}
           </div>
           {batchResults.length > 0 && (
             <div className="space-y-0.5 max-h-24 overflow-y-auto">
