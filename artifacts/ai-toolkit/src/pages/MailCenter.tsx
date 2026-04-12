@@ -345,9 +345,11 @@ export default function MailCenter() {
               return { ...prev, accounts: updated };
             });
             loadAccounts();
-          } else if (p.error && p.error !== "authorization_pending" && p.error !== "slow_down") {
+          } else if (!p.pending && p.error) {
+            // p.pending = true → authorization_pending or slow_down → keep waiting
+            // p.pending = false/missing + p.error → real failure (expired, denied, etc.)
             const errMsg = p.errorDescription ?? p.error ?? "授权失败";
-            const isExpired = /expired|code_expired|expired_token/i.test(p.error ?? "");
+            const isExpired = /expired|code_expired|expired_token|过期/i.test(p.error ?? "");
             setBatchOAuth(prev => {
               if (!prev) return prev;
               const updated = prev.accounts.map(a =>
@@ -805,10 +807,12 @@ export default function MailCenter() {
 
             {/* 底部 */}
             <div className="px-5 py-3 border-t border-[#21262d] flex items-center gap-3">
-              {batchOAuth.accounts.every(a => a.status !== "pending") ? (
+              {batchOAuth.accounts.every(a => a.status === "done") ? (
                 <p className="text-xs text-emerald-400 font-medium">✅ 所有授权已完成</p>
+              ) : batchOAuth.accounts.some(a => a.status === "pending") ? (
+                <p className="text-[11px] text-gray-500 animate-pulse">后台每 4 秒轮询，等待你在浏览器完成授权…</p>
               ) : (
-                <p className="text-[11px] text-gray-500 animate-pulse">后台轮询中，等待微软确认授权…</p>
+                <p className="text-[11px] text-amber-400">有账号授权失败或码已过期，可重新点击「批量 OAuth 授权」按钮</p>
               )}
               <button onClick={closeBatchOAuth}
                 className="ml-auto px-4 py-1.5 bg-[#21262d] hover:bg-[#30363d] rounded text-xs text-gray-300 transition-colors">

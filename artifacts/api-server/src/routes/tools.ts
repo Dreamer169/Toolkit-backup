@@ -973,7 +973,7 @@ router.post("/tools/outlook/batch-oauth/start", async (req, res) => {
     const sessionList: BatchOAuthSession[] = [];
     await Promise.allSettled(rows.map(async (acc) => {
       try {
-        const r = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode", {
+        const r = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/devicecode", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({ client_id: CLIENT_ID, scope: SCOPE }).toString(),
