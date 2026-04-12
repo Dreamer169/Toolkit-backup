@@ -60,6 +60,18 @@ function extractCode(text: string): string {
   return m6 ? m6[1] : mAZ ? mAZ[1] : "";
 }
 
+// 给邮件 HTML 注入 <base target="_blank">，让所有链接强制在新标签页打开
+function injectBaseTarget(html: string): string {
+  const base = '<base target="_blank" rel="noopener noreferrer">';
+  if (/<head[\s>]/i.test(html)) {
+    return html.replace(/(<head[^>]*>)/i, `$1${base}`);
+  }
+  if (/<html[\s>]/i.test(html)) {
+    return html.replace(/(<html[^>]*>)/i, `$1<head>${base}</head>`);
+  }
+  return base + html;
+}
+
 function fmtDate(iso: string) {
   const d    = new Date(iso);
   const now  = new Date();
@@ -707,7 +719,7 @@ export default function MailCenter() {
               {selMsg.body ? (
                 selMsg.bodyType === "html" ? (
                   <iframe
-                    srcDoc={selMsg.body}
+                    srcDoc={injectBaseTarget(selMsg.body)}
                     sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
                     className="w-full rounded border border-[#21262d] bg-white"
                     style={{ minHeight: "400px", height: "100%" }}
