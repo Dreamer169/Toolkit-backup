@@ -240,15 +240,15 @@ export default function FullWorkflow() {
       </div>
 
       {/* 打码服务配置面板（始终可见）*/}
-      <div className={`rounded-lg border p-4 ${captchaHasKey ? "bg-emerald-950/30 border-emerald-700/40" : "bg-amber-950/30 border-amber-700/40"}`}>
+      <div className={`rounded-lg border p-4 ${captchaHasKey ? "bg-emerald-950/30 border-emerald-700/40" : "bg-[#161b22] border-[#30363d]"}`}>
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-lg">{captchaHasKey ? "🔑" : "⚠️"}</span>
+          <span className="text-lg">{captchaHasKey ? "🔑" : "🛡️"}</span>
           <div className="flex-1 min-w-0">
-            <p className={`text-sm font-medium ${captchaHasKey ? "text-emerald-300" : "text-amber-300"}`}>
-              {captchaHasKey ? `打码服务已配置 (${captchaService})` : "未配置打码服务（CAPTCHA 将依赖无障碍挑战，成功率较低）"}
+            <p className={`text-sm font-medium ${captchaHasKey ? "text-emerald-300" : "text-gray-300"}`}>
+              {captchaHasKey ? `打码服务已配置 (${captchaService})` : "无障碍挑战绕过（主要方式，成功率高）"}
             </p>
             <p className="text-xs text-gray-500 mt-0.5">
-              {captchaHasKey ? `Key: ${captchaKeyMasked}` : "支持 2captcha 或 CapMonster，无障碍挑战失败时自动降级使用打码服务"}
+              {captchaHasKey ? `Key: ${captchaKeyMasked}` : "支持 2captcha / CapMonster 作为备用降级方案"}
             </p>
           </div>
           <button onClick={() => setCaptchaShowInput(v => !v)}

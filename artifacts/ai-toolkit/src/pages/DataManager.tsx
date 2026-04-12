@@ -25,6 +25,7 @@ interface Stats {
   accounts: { total: number; active: number };
   identities: { total: number };
   emails: { total: number };
+  long_term: { total: number };
   byPlatform: { platform: string; count: number }[];
 }
 
@@ -53,7 +54,7 @@ function StatsPanel() {
           { label:"账号总数", value: stats.accounts.total, sub:`${stats.accounts.active} 个有效`, color:"text-blue-400" },
           { label:"有效账号", value: stats.accounts.active, sub:`共 ${stats.accounts.total} 个`, color:"text-emerald-400" },
           { label:"身份信息", value: stats.identities.total, sub:"条记录", color:"text-amber-400" },
-          { label:"临时邮箱", value: stats.emails.total, sub:"个邮箱", color:"text-purple-400" },
+          { label:"长期/临时", value: stats.long_term.total + stats.emails.total, sub:`${stats.long_term.total} 长期 · ${stats.emails.total} 临时`, color:"text-purple-400" },
         ].map(({ label, value, sub, color }) => (
           <div key={label} className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 text-center">
             <div className={`text-3xl font-bold ${color}`}>{value}</div>
@@ -636,6 +637,17 @@ const INITIAL_ENTRIES: GuideEntry[] = [
     id: "e012", date: "2026-04-11", type: "doc",
     title: "使用说明",
     content: "═══ 快速开始 ═══\n\n打开应用后，导航栏顶部有所有功能标签。\n建议首次使用顺序：实时监控 → 完整工作流 → 数据管理中心\n\n═══ 完整工作流（最核心功能）═══\n\n路径：点击导航栏「🔗 完整工作流」\n\nStep 1  准备阶段\n  · 点击「生成身份 + 准备邮箱」\n  · 系统自动从 randomuser.me 获取真实姓名/地址/手机\n  · 同时生成随机浏览器指纹（patchright 自动使用）\n  · 生成随机 Outlook 邮箱（未注册格式）\n\nStep 2  配置注册参数\n  · 代理：留空 = 自动从代理池选取（推荐）\n           或手动填写：socks5://user:pass@host:port\n  · 引擎：patchright（默认，反检测）/ playwright\n  · 无头模式：开启=后台运行（无界面），关闭=可见浏览器\n  · Bot 保护等待：注册过程中等待秒数（建议 11s 以上）\n\nStep 3  启动注册\n  · 点击「🚀 启动 Outlook 自动注册（代理池自动选取）」\n  · 切换到「📡 实时监控」可以看到实时日志\n  · 注册成功后账号自动保存到数据库\n\nStep 4  保存数据\n  · 注册完成后点击「💾 保存到数据库」\n  · 如注册失败也可点「仅保存凭据」记录账号信息\n\n═══ 实时监控 ═══\n\n路径：点击导航栏「📡 实时监控」\n\n功能：\n  · 顶部 4 个状态卡片：API 健康、任务数量、代理池、账号总数\n  · 左侧任务队列：列出所有注册任务，运行中的有蓝色闪烁圆点\n  · 右侧日志区：点击任意任务即可查看完整实时日志\n  · 最近账号表：最新 6 条入库记录\n  · 代理池进度条：空闲/活跃/封禁数量可视化\n\n操作：\n  · ⏸ 暂停   — 停止自动刷新（查看日志时防止跳动）\n  · ▶ 恢复   — 恢复 2s 自动刷新\n  · 🔄 立即刷新 — 手动触发一次刷新\n  · ⏹ 停止   — 停止运行中的注册任务\n\n═══ 数据管理中心 ═══\n\n路径：点击导航栏「🗄️ 数据管理中心」\n\n标签页：\n  统计概览  — 各表记录数、最近活动\n  账号库    — 所有平台账号，支持搜索/删除/导出\n  身份库    — 虚拟身份信息，支持搜索/导出\n  邮箱库    — 临时邮箱记录\n  代理池    — 代理状态/封禁/重置\n  系统配置  — 键值对配置，如默认代理地址\n\n导入格式（账号批量导入）：\n  每行一条，格式：平台,邮箱,密码\n  示例：outlook,user@outlook.com,MyPass123\n\n═══ 代理池管理 ═══\n\n代理池位于「数据管理中心」→「代理池」标签\n\n· 查看每条代理的状态（idle/active/banned）和使用次数\n· 封禁：标记问题代理，自动选取时跳过\n· 重置：将封禁的代理恢复为 idle 状态\n· 批量导入格式：\n    socks5://user:pass@host:port      （标准格式）\n    socks5://host:port:user:pass      （旧格式，自动转换）\n\n═══ 其他工具页面 ═══\n\n临时邮箱    — 实时接收邮件，用于注册验证\n批量邮箱    — 通过 MailTM 批量生成邮箱账号\n免费身份邮箱— 无需 API Key，生成带邮箱的完整虚拟身份\nKey 验证   — 验证 OpenAI/Claude 等 API Key 有效性\n批量检测   — 批量验证 Token 是否有效\nIP 查询    — 查询当前出口 IP 及地理位置\n信息生成   — 批量生成虚拟身份（姓名/地址/手机）\n机器 ID 重置— 重置 Cursor 编辑器的机器 ID（解除设备限制）\n浏览器指纹 — 查看/对比当前浏览器指纹信息\nOutlook 工作流 — OAuth2 Token 获取与管理\n\n═══ 常见问题 ═══\n\nQ: 注册卡在 CAPTCHA 怎么办？\nA: 必须使用住宅代理。数据中心 IP 会被微软强制验证。\n   代理池已内置 100 条 quarkip US 住宅代理，启动注册时会自动选取，无需手动填写。\n\nQ: 任务消失了（轮询返回 404）？\nA: 注册任务存储在内存中，服务器重启后任务会丢失。\n   监控页/工作流页会检测到 404 并给出提示，重新启动即可。\n   账号数据存在数据库，不受重启影响。\n\nQ: 如何确认注册是否成功？\nA: 查看实时监控的日志区，出现绿色「✅ 注册成功」即成功。\n   也可在「数据管理中心」→「账号库」中查看新入库记录。\n\nQ: 代理被封了怎么办？\nA: 在「数据管理中心」→「代理池」找到该代理，点「封禁」\n   标记它，系统自动选取时会跳过封禁的代理。",
+  },
+  {
+    id: "e014", date: "2026-04-12", type: "doc",
+    title: "Outlook 邮箱库说明（长期邮箱，非临时邮箱）",
+    content: "Outlook 注册账号属于「邮箱库」，是可正常收发邮件的永久性 Microsoft 邮箱账号，区别于 MailTM 临时邮箱。\n\n用途：\n  • 作为注册其他服务（Cursor、ChatGPT 等）的长期邮箱接收验证码\n  • 拥有完整的 Outlook.com 邮件功能\n  • 不会自动过期（MailTM 临时邮箱一般有效期 10 天）\n\n账号状态：\n  • 统计看板「长期/临时」卡片 = 长期（Outlook等邮箱账号）+ 临时（MailTM）合计\n  • 账号库中 platform=outlook 即邮箱库账号\n\n注意事项：\n  • 长期不登录的账号可能被 Microsoft 暂停，建议定期登录保活\n  • 注册时每个账号使用独立 CF IP，Microsoft 不会将多个账号关联\n  • 密码已加密存储，可从数据管理中心→账号库查看和导出",
+  },
+  {
+    id: "e015", date: "2026-04-12", type: "fix",
+    title: "CAPTCHA 根本原因修复（LainsNL frame_locator 三步点击法）",
+    source: "https://github.com/LainsNL/OutlookRegister",
+    content: "根本原因：我们一直在点错了按钮，且使用了错误的 frame 定位 API。\n\n通过研究 LainsNL/OutlookRegister 和 hrhcode/outlook-batch-manager 两个参考项目找到了真正的三步点击流程：\n\n第1次：点击 FunCaptcha 外面的「可访问性挑战」按钮 → 图像拼图出现\n第2次：frame_locator('iframe[title=\"验证质询\"]') → frame_locator('iframe[style*=\"display: block\"]') → 点击 [aria-label=\"可访问性挑战\"] → 切换模式\n第3次：点击 [aria-label=\"再次按下\"] ← 这才是触发验证通过的关键按钮！\n\n为什么之前一直失败：\n  • 用 page.frames[] 按 URL 扫描，坐标系是 iframe 内部坐标，click 位置错误\n  • iframe[style*=\"display: block\"] 精准过滤掉所有 display:none 干扰 iframe\n  • 从未点过「再次按下」这个关键的第三个按钮\n\n实测结果：\n  • 1/1 → 3/3 → 全部成功，耗时约 75s/账号\n  • 降级链路：Enter键法 → 无障碍三步点击 → 2captcha/CapMonster（按需配置）",
   },
   {
     id: "e013", date: "2026-04-11", type: "doc",

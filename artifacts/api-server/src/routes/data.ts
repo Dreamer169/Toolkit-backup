@@ -289,20 +289,23 @@ router.post("/data/proxies/import", async (req, res) => {
 // ─── 统计 ───────────────────────────────────────────────
 router.get("/data/stats", async (req, res) => {
   try {
-    const [accts, idents, emails] = await Promise.all([
+    const EMAIL_PLATFORMS = ["outlook", "gmail", "yahoo", "hotmail", "163", "qq"];
+    const [accts, idents, tempEmails, longTermEmails] = await Promise.all([
       queryOne<{ total: string; active: string }>(`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status='active') as active FROM accounts`),
       queryOne<{ total: string }>(`SELECT COUNT(*) as total FROM identities`),
       queryOne<{ total: string }>(`SELECT COUNT(*) as total FROM temp_emails`),
+      queryOne<{ total: string }>(`SELECT COUNT(*) as total FROM accounts WHERE platform = ANY($1)`, [EMAIL_PLATFORMS]),
     ]);
     const byPlatform = await query<{ platform: string; count: string }>(
       `SELECT platform, COUNT(*) as count FROM accounts GROUP BY platform ORDER BY count DESC`
     );
     res.json({
       success: true,
-      accounts:   { total: Number(accts?.total ?? 0), active: Number(accts?.active ?? 0) },
-      identities: { total: Number(idents?.total ?? 0) },
-      emails:     { total: Number(emails?.total ?? 0) },
-      byPlatform: byPlatform.map(r => ({ platform: r.platform, count: Number(r.count) })),
+      accounts:    { total: Number(accts?.total ?? 0), active: Number(accts?.active ?? 0) },
+      identities:  { total: Number(idents?.total ?? 0) },
+      emails:      { total: Number(tempEmails?.total ?? 0) },
+      long_term:   { total: Number(longTermEmails?.total ?? 0) },
+      byPlatform:  byPlatform.map(r => ({ platform: r.platform, count: Number(r.count) })),
     });
   } catch (e) { res.status(500).json({ success: false, error: String(e) }); }
 });
