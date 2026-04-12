@@ -1553,6 +1553,110 @@ router.post("/tools/outlook/save-token", async (req, res) => {
   }
 });
 
+// ── ROPC 一键自动授权（用存储的密码直接换 token，无需人工介入）────────────────
+// Microsoft 公共 MSAL client，适用于个人 Outlook / Hotmail 账号
+// 文档：https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth-ropc
+router.post("/tools/outlook/auto-auth", async (req, res) => {
+  const { accountId } = req.body as { accountId?: number };
+  if (!accountId) { res.status(400).json({ success: false, error: "accountId 不能为空" }); return; }
+  try {
+    const { query, execute } = await import("../db.js");
+    const rows = await query<{
+      id: number; email: string; password: string | null;
+    }>("SELECT id, email, password FROM accounts WHERE id=$1 AND platform='outlook'", [accountId]);
+    const acc = rows[0];
+    if (!acc) { res.status(404).json({ success: false, error: "账号不存在" }); return; }
+    if (!acc.password) {
+      res.json({ success: false, error: "数据库中没有存储该账号的密码，无法自动授权" });
+      return;
+    }
+
+    // ROPC token 请求
+    const tokenRes = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "password",
+        client_id: "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+        username: acc.email,
+        password: acc.password,
+        scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access",
+      }).toString(),
+    });
+    const td = await tokenRes.json() as {
+      access_token?: string; refresh_token?: string;
+      error?: string; error_description?: string;
+    };
+
+    if (!td.access_token) {
+      const msg = td.error_description ?? td.error ?? "授权失败";
+      res.json({ success: false, error: msg });
+      return;
+    }
+
+    // 保存 token
+    await execute(
+      "UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
+      [td.access_token, td.refresh_token ?? null, accountId]
+    );
+    res.json({ success: true, email: acc.email });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+// ── ROPC 批量一键授权（对所有未授权账号执行自动授权）──────────────────────────
+router.post("/tools/outlook/auto-auth-all", async (req, res) => {
+  try {
+    const { query, execute } = await import("../db.js");
+    const rows = await query<{
+      id: number; email: string; password: string | null;
+    }>(
+      "SELECT id, email, password FROM accounts WHERE platform='outlook' AND (token IS NULL OR token='') AND password IS NOT NULL AND password != ''",
+      []
+    );
+    if (rows.length === 0) {
+      res.json({ success: true, results: [], msg: "没有需要授权的账号" });
+      return;
+    }
+    const results: Array<{ id: number; email: string; ok: boolean; error?: string }> = [];
+    for (const acc of rows) {
+      try {
+        const tokenRes = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "password",
+            client_id: "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+            username: acc.email,
+            password: acc.password!,
+            scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access",
+          }).toString(),
+        });
+        const td = await tokenRes.json() as {
+          access_token?: string; refresh_token?: string;
+          error?: string; error_description?: string;
+        };
+        if (td.access_token) {
+          await execute(
+            "UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
+            [td.access_token, td.refresh_token ?? null, acc.id]
+          );
+          results.push({ id: acc.id, email: acc.email, ok: true });
+        } else {
+          results.push({ id: acc.id, email: acc.email, ok: false, error: td.error_description ?? td.error ?? "失败" });
+        }
+      } catch (e) {
+        results.push({ id: acc.id, email: acc.email, ok: false, error: String(e) });
+      }
+    }
+    const ok = results.filter(r => r.ok).length;
+    res.json({ success: true, results, total: rows.length, authorized: ok, failed: rows.length - ok });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
 // ── 按账号ID拉取邮件（自动刷新token）──────────────────────────────────────
 // 供邮件中心使用，前端只传账号ID，token管理完全在后端
 const DEFAULT_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
