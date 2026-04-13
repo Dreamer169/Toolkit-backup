@@ -690,6 +690,22 @@ class PatchrightController(BaseController):
         失败后使用无障碍按钮点击法；
         最后降级到打码服务。
         """
+        # ── [关键修正] 在任何点击前安装音频URL网络拦截器 ──────────────────
+        # Arkose Labs 音频文件通过XHR/fetch请求，DOM里audio.src始终为空
+        # 必须在accessibility按钮点击前就安装拦截器，才能捕获到音频请求
+        self._net_audio_urls = []
+        _AUDIO_EXTS_HC = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
+        _AUDIO_KWS_HC  = ('audio-challenge', '/audio/', '/sound/', 'speak', 'arkose', 'funcaptcha')
+        def _on_audio_request(request):
+            url = request.url
+            low = url.lower()
+            if any(low.endswith(e) for e in _AUDIO_EXTS_HC) or any(kw in low for kw in _AUDIO_KWS_HC):
+                if url not in self._net_audio_urls:
+                    self._net_audio_urls.append(url)
+                    print(f"[captcha] 🌐 [早期拦截] 音频URL: {url[:100]}", flush=True)
+        page.on("request", _on_audio_request)
+        print("[captcha] ✅ 音频URL拦截器已安装（在按钮点击前）", flush=True)
+
         # ── 方式1：Enter键法（等blob URL → Enter通过）──────────────────
         enter_ok = self._try_enter_challenge_patchright(page)
         if enter_ok:
@@ -1323,21 +1339,8 @@ class PatchrightController(BaseController):
         play_btn_frames = []  # frames where we found a play button (but no src yet)
 
         # ── 关键修正：音频URL通过网络请求传输，DOM里audio.src始终为空 ──
-        # 用 page.on("request") 拦截网络请求直接捕获音频文件URL
-        _network_audio_urls = []
-        _AUDIO_EXTS = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
-        _AUDIO_KWS  = ('audio-challenge', '/audio/', '/sound/', 'speak', 'arkose', 'funcaptcha')
-
-        def _on_request(request):
-            url = request.url
-            lower = url.lower()
-            if any(lower.endswith(ext) for ext in _AUDIO_EXTS) or any(kw in lower for kw in _AUDIO_KWS):
-                if url not in _network_audio_urls:
-                    _network_audio_urls.append(url)
-                    print(f"[captcha] 🌐 网络拦截到音频URL: {url[:100]}", flush=True)
-
-        page.on("request", _on_request)
-        print("[captcha] 已安装网络请求拦截器（监听音频文件请求）", flush=True)
+        # 使用 handle_captcha() 顶部安装的早期拦截器 self._net_audio_urls
+        _network_audio_urls = getattr(self, "_net_audio_urls", [])
 
 
         def _scan_frames_for_audio(frames):
