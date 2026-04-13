@@ -954,16 +954,7 @@ class MultiMailRouter:
             except Exception as e:
                 logger.warning("创建邮箱提供商 %s 失败: %s", name, e)
 
-        # Auto-add DuckMail as no-auth fallback when only one provider is configured
-        if len(self._provider_names) == 1 and "duckmail" not in self._provider_names:
-            try:
-                duck = create_provider_by_name("duckmail", {})
-                self._provider_names.append("duckmail")
-                self._providers["duckmail"] = duck
-                self._failures["duckmail"] = 0
-                logger.info("已自动追加 DuckMail 作为备用邮箱提供商")
-            except Exception as _duck_exc:
-                logger.warning("DuckMail 备用追加失败: %s", _duck_exc)
+        # DuckMail auto-add removed — OpenAI blocks duckmail domains at signup
 
         if not self._providers:
             if providers_list:
@@ -972,15 +963,7 @@ class MultiMailRouter:
             self._provider_names = ["mailtm"]
             self._providers = {"mailtm": fallback}
             self._failures = {"mailtm": 0}
-            # Auto-add DuckMail fallback
-            try:
-                duck = create_provider_by_name("duckmail", {})
-                self._provider_names.append("duckmail")
-                self._providers["duckmail"] = duck
-                self._failures["duckmail"] = 0
-                logger.info("已自动追加 DuckMail 作为备用邮箱提供商")
-            except Exception as _duck_exc:
-                logger.warning("DuckMail 备用追加失败: %s", _duck_exc)
+            # DuckMail auto-add removed — OpenAI blocks duckmail domains at signup
 
     def next_provider(self) -> Tuple[str, MailProvider]:
         with self._lock:

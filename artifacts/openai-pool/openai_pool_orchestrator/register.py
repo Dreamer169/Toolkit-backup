@@ -943,16 +943,16 @@ def run(
         proxy_value = _next_proxy_value()
         return _to_proxies_dict(proxy_value)
 
-    # 随机 Chrome 指纹，避免 OpenAI 反机器人检测
+    # 随机 Chrome 指纹，避免 OpenAI 反机器人检测 (仅使用 curl_cffi 0.14.0 支持的版本)
     _chrome_profiles = [
-        {"major": 146, "imp": "chrome146", "build": 7676, "patch": (40, 180),
-         "sec": '"Google Chrome";v="146", "Chromium";v="146", "Not-A.Brand";v="8"'},
+        {"major": 142, "imp": "chrome142", "build": 7151, "patch": (80, 200),
+         "sec": '"Google Chrome";v="142", "Chromium";v="142", "Not-A.Brand";v="8"'},
         {"major": 133, "imp": "chrome133a", "build": 6943, "patch": (100, 200),
          "sec": '"Google Chrome";v="133", "Chromium";v="133", "Not(A:Brand";v="99"'},
         {"major": 136, "imp": "chrome136", "build": 7103, "patch": (92, 200),
          "sec": '"Google Chrome";v="136", "Chromium";v="136", "Not.A-Brand";v="99"'},
-        {"major": 145, "imp": "chrome145", "build": 7649, "patch": (40, 180),
-         "sec": '"Google Chrome";v="145", "Chromium";v="145", "Not-A.Brand";v="8"'},
+        {"major": 124, "imp": "chrome124", "build": 6367, "patch": (72, 180),
+         "sec": '"Google Chrome";v="124", "Chromium";v="124", "Not-A.Brand";v="99"'},
     ]
     _cp = random.choice(_chrome_profiles)
     _chrome_full = f"{_cp['major']}.0.{_cp['build']}.{random.randint(*_cp['patch'])}"
@@ -1547,10 +1547,11 @@ def run(
         emitter.info(f"Register headers (keys): {list(_reg_headers.keys())}", step="signup")
         # Log cookies that will be sent to auth.openai.com (safe iteration)
         try:
-            _cookie_keys = [c.name for c in s.cookies]
+            # curl_cffi cookies dict-style: iterating yields cookie names as strings
+            _cookie_keys = list(s.cookies.keys()) if hasattr(s.cookies, 'keys') else list(s.cookies)
             emitter.info(f"Session cookies (all): {_cookie_keys}", step="signup")
-            _login_session = next((c.value for c in s.cookies if c.name == "login_session" and "auth.openai.com" in (c.domain or "")), None)
-            emitter.info(f"login_session cookie on auth.openai.com: {bool(_login_session)}", step="signup")
+            _login_session = s.cookies.get("login_session") or None
+            emitter.info(f"login_session cookie: {bool(_login_session)}", step="signup")
         except Exception as _ce:
             emitter.info(f"Cookie inspection failed: {_ce}", step="signup")
         signup_resp = _session_post(
