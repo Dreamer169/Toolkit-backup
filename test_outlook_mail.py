@@ -129,7 +129,7 @@ def main():
         f"/me/mailFolders/{folder}/messages"
         f"?$top={top}"
         f"&$select=id,subject,from,receivedDateTime,bodyPreview,isRead"
-        f"&$orderby=receivedDateTime desc"
+        f"&$orderby=receivedDateTime%20desc"
     )
     data     = graph_get(url, access_token)
     messages = data.get("value", [])

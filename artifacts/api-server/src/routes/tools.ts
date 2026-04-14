@@ -2356,5 +2356,162 @@ router.delete("/tools/outlook/auto-retoken/:jobId", (req, res) => {
   res.json({ success: stopped, message: stopped ? "已停止" : "任务不存在或已结束" });
 });
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mark email as read / unread via Graph API
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.patch("/tools/outlook/message/:accountId/:messageId/read", async (req, res) => {
+  try {
+    const { accountId: rawId, messageId } = req.params;
+    const { isRead = true } = req.body as { isRead?: boolean };
+    const accountId = parseInt(rawId, 10);
+    const { query, execute } = await import("../db.js");
+
+    const rows = await query<{ token: string | null; refresh_token: string | null }>(
+      "SELECT token, refresh_token FROM accounts WHERE id=$1 AND platform='outlook'", [accountId]
+    );
+    if (!rows[0]) { res.status(404).json({ success: false, error: "账号不存在" }); return; }
+
+    let token = rows[0].token ?? "";
+    if (rows[0].refresh_token) {
+      const r = await fetch(`https://login.microsoftonline.com/common/oauth2/v2.0/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token", client_id: OAUTH_CLIENT_ID,
+          refresh_token: rows[0].refresh_token,
+          scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite offline_access",
+        }).toString(),
+      });
+      const td = await r.json() as { access_token?: string; refresh_token?: string };
+      if (td.access_token) {
+        token = td.access_token;
+        await execute("UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
+          [token, td.refresh_token ?? rows[0].refresh_token, accountId]);
+      }
+    }
+    if (!token) { res.status(400).json({ success: false, error: "无可用 token" }); return; }
+
+    const gr = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ isRead }),
+    });
+    if (!gr.ok) {
+      const err = await gr.json() as { error?: { message?: string } };
+      res.status(gr.status).json({ success: false, error: err?.error?.message ?? "Graph API 失败" });
+      return;
+    }
+    res.json({ success: true, messageId, isRead });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Move email to a folder via Graph API
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post("/tools/outlook/message/:accountId/:messageId/move", async (req, res) => {
+  try {
+    const { accountId: rawId, messageId } = req.params;
+    const { destinationId } = req.body as { destinationId: string };
+    const accountId = parseInt(rawId, 10);
+    if (!destinationId) { res.status(400).json({ success: false, error: "destinationId 必填 (e.g. inbox, deleteditems, junkemail, archive)" }); return; }
+    const { query, execute } = await import("../db.js");
+
+    const rows = await query<{ token: string | null; refresh_token: string | null }>(
+      "SELECT token, refresh_token FROM accounts WHERE id=$1 AND platform='outlook'", [accountId]
+    );
+    if (!rows[0]) { res.status(404).json({ success: false, error: "账号不存在" }); return; }
+
+    let token = rows[0].token ?? "";
+    if (rows[0].refresh_token) {
+      const r = await fetch(`https://login.microsoftonline.com/common/oauth2/v2.0/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token", client_id: OAUTH_CLIENT_ID,
+          refresh_token: rows[0].refresh_token,
+          scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite offline_access",
+        }).toString(),
+      });
+      const td = await r.json() as { access_token?: string; refresh_token?: string };
+      if (td.access_token) {
+        token = td.access_token;
+        await execute("UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
+          [token, td.refresh_token ?? rows[0].refresh_token, accountId]);
+      }
+    }
+    if (!token) { res.status(400).json({ success: false, error: "无可用 token" }); return; }
+
+    const gr = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/move`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ destinationId }),
+    });
+    if (!gr.ok) {
+      const err = await gr.json() as { error?: { message?: string } };
+      res.status(gr.status).json({ success: false, error: err?.error?.message ?? "Graph API 失败" });
+      return;
+    }
+    const moved = await gr.json() as { id: string };
+    res.json({ success: true, newMessageId: moved.id, destinationId });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Delete email via Graph API
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.delete("/tools/outlook/message/:accountId/:messageId", async (req, res) => {
+  try {
+    const { accountId: rawId, messageId } = req.params;
+    const accountId = parseInt(rawId, 10);
+    const { query, execute } = await import("../db.js");
+
+    const rows = await query<{ token: string | null; refresh_token: string | null }>(
+      "SELECT token, refresh_token FROM accounts WHERE id=$1 AND platform='outlook'", [accountId]
+    );
+    if (!rows[0]) { res.status(404).json({ success: false, error: "账号不存在" }); return; }
+
+    let token = rows[0].token ?? "";
+    if (rows[0].refresh_token) {
+      const r = await fetch(`https://login.microsoftonline.com/common/oauth2/v2.0/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token", client_id: OAUTH_CLIENT_ID,
+          refresh_token: rows[0].refresh_token,
+          scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite offline_access",
+        }).toString(),
+      });
+      const td = await r.json() as { access_token?: string; refresh_token?: string };
+      if (td.access_token) {
+        token = td.access_token;
+        await execute("UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
+          [token, td.refresh_token ?? rows[0].refresh_token, accountId]);
+      }
+    }
+    if (!token) { res.status(400).json({ success: false, error: "无可用 token" }); return; }
+
+    const gr = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (gr.status === 204) {
+      res.json({ success: true, messageId, deleted: true });
+    } else {
+      const err = await gr.json() as { error?: { message?: string } };
+      res.status(gr.status).json({ success: false, error: err?.error?.message ?? "Graph API 失败" });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
 export default router;
 
