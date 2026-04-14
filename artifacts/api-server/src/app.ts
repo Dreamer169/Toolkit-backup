@@ -4,6 +4,11 @@ import pinoHttp from "pino-http";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import path from "path";
+import { fileURLToPath } from "url";
+import { existsSync } from "fs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app: Express = express();
 
@@ -73,5 +78,13 @@ app.use(
     },
   }),
 );
+
+const frontendDist = path.resolve(__dirname, "../../ai-toolkit/dist/public");
+if (existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  app.get("/{*path}", (_req, res) => {
+    res.sendFile(path.join(frontendDist, "index.html"));
+  });
+}
 
 export default app;

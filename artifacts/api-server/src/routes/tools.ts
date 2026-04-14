@@ -1,3 +1,4 @@
+import { jobQueue } from "../lib/job-queue.js";
 import { Router, type IRouter } from "express";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { execute } from "../db.js";
@@ -1137,20 +1138,24 @@ router.post("/tools/outlook/register", async (req, res) => {
     ? proxiesInput.split(/[\n,]+/).map((p: string) => p.trim()).filter(Boolean)
     : proxyInput ? [proxyInput] : [];
 
-  // 如果没有提供代理，且 autoProxy=true，则从代理池自动选取
+  // 如果没有提供代理，且 autoProxy=true，则从代理池自动选取 (按账号数量选多个代理，1IP1账号)
   let proxy = proxyList[0] || "";
   let autoProxyId: number | null = null;
   if (!proxy && autoProxy) {
     try {
-      const { query: dbQuery } = await import("../db.js");
+      const { query: dbQuery, execute: dbExec } = await import("../db.js");
+      const need = Math.min(10, Math.max(1, count));
       const rows = await dbQuery<{ id: number; formatted: string }>(
-        "SELECT id, formatted FROM proxies WHERE status != 'banned' ORDER BY used_count ASC, RANDOM() LIMIT 1"
+        `SELECT id, formatted FROM proxies WHERE status != 'banned' ORDER BY used_count ASC, RANDOM() LIMIT ${need}`
       );
-      if (rows[0]) {
+      if (rows.length > 0) {
         proxy = rows[0].formatted;
         autoProxyId = rows[0].id;
-        const { execute: dbExec } = await import("../db.js");
-        await dbExec("UPDATE proxies SET used_count = used_count + 1, last_used = NOW(), status = 'active' WHERE id = $1", [autoProxyId]);
+        // 多账号时将所有选中代理加入轮换列表
+        for (const r of rows) {
+          if (!proxyList.includes(r.formatted)) proxyList.push(r.formatted);
+          await dbExec("UPDATE proxies SET used_count = used_count + 1, last_used = NOW(), status = 'active' WHERE id = $1", [r.id]);
+        }
       }
     } catch {}
   }
@@ -1173,17 +1178,10 @@ router.post("/tools/outlook/register", async (req, res) => {
   const eng = ["patchright", "playwright"].includes(engine) ? engine : "patchright";
   const jobId = `reg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  const job: RegJob = {
-    status: "running",
-    logs: [],
-    accounts: [],
-    exitCode: null,
-    startedAt: Date.now(),
-  };
   const proxyDisplay = proxy ? proxy.replace(/:([^:@]{4})[^:@]*@/, ":****@") : "无代理";
+  const job = await jobQueue.create(jobId);
   job.logs.push({ type: "start", message: `启动 ${eng} 注册 ${n} 个 Outlook 账号 (bot_protection_wait=${wait}s)${autoProxyId ? " [代理池自动选取]" : ""}...` });
   if (proxy) job.logs.push({ type: "log", message: `🌐 代理: ${proxyDisplay}` });
-  await jobQueue.create(jobId);
 
   // 立即响应 jobId（不等待注册完成）
   res.json({ success: true, jobId, message: "注册任务已启动" });
@@ -1217,6 +1215,7 @@ router.post("/tools/outlook/register", async (req, res) => {
   }
 
   const child = spawn("python3", args, { env: { ...process.env, PYTHONUNBUFFERED: "1" } });
+  jobQueue.setChild(jobId, child);
 
   let jsonBuf = "";
   let inJson  = false;
@@ -1270,7 +1269,7 @@ router.post("/tools/outlook/register", async (req, res) => {
     }
   });
 
-  child.on("close", (code) => {
+  child.on("close", async (code) => {
     // 解析 JSON 结果块
     try {
       const jsonStart = jsonBuf.indexOf("[");
@@ -1290,7 +1289,7 @@ router.post("/tools/outlook/register", async (req, res) => {
 
     // ── 持久化到数据库 + 立即 ROPC 自动授权 ────────────────────────────────
     if (okCount > 0) {
-      (async () => {
+      await (async () => {
         const ROPC_CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c";
         const ROPC_SCOPE = "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access";
         for (const acc of job.accounts) {
@@ -1341,8 +1340,7 @@ router.post("/tools/outlook/register", async (req, res) => {
       type: "done",
       message: `注册任务完成 · 成功 ${okCount} 个 / 共 ${n} 个` + (okCount > 0 ? ` ✅` : ` (需要住宅代理才能通过 CAPTCHA)`),
     });
-    job.status   = "done";
-    job.exitCode = code;
+    await jobQueue.finish(jobId, code ?? -1, "done");
   });
 });
 
@@ -1415,11 +1413,10 @@ router.post("/tools/cursor/register", async (req, res) => {
 
   const n = Math.min(5, Math.max(1, count));
   const jobId = `cur_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const job: RegJob = { status: "running", logs: [], accounts: [], exitCode: null, startedAt: Date.now() };
   const proxyDisplay = proxy ? proxy.replace(/:([^:@]{4})[^:@]*@/, ":****@") : "无代理";
+  const job = await jobQueue.create(jobId);
   job.logs.push({ type: "start", message: `启动 Cursor 自动注册 ${n} 个账号...` });
   if (proxy) job.logs.push({ type: "log", message: `🌐 代理: ${proxyDisplay}` });
-  await jobQueue.create(jobId);
 
   res.json({ success: true, jobId, message: "Cursor 注册任务已启动" });
 
@@ -1429,7 +1426,7 @@ router.post("/tools/cursor/register", async (req, res) => {
   if (proxy) args.push("--proxy", proxy);
 
   const child = spawn("python3", args, { env: { ...process.env, PYTHONUNBUFFERED: "1" } });
-  (job as unknown as { _child: unknown })._child = child;
+  jobQueue.setChild(jobId, child);
 
   child.stdout.on("data", (chunk: Buffer) => {
     for (const line of chunk.toString().split("\n")) {
@@ -1438,13 +1435,40 @@ router.post("/tools/cursor/register", async (req, res) => {
       try {
         const ev = JSON.parse(s) as { type: string; message: string };
         if (ev.type === "accounts") {
-          const accounts = JSON.parse(ev.message) as Array<{ email: string; password: string; name: string }>;
+          const accounts = JSON.parse(ev.message) as Array<{ email: string; password: string; name: string; token?: string }>;
           for (const acc of accounts) {
-            job.accounts.push({ email: acc.email, password: acc.password, username: acc.name });
+            const existing = (job.accounts as Array<{email:string}>).find(a => a.email === acc.email);
+            if (existing) {
+              // update token if we now have it
+              if (acc.token) (existing as any).token = acc.token;
+            } else {
+              job.accounts.push({ email: acc.email, password: acc.password, username: acc.name, token: acc.token });
+            }
+            // Upsert into DB with token
+            import("../db.js").then(({ execute: dbExec }) => {
+              dbExec(
+                `INSERT INTO accounts (platform, email, password, token, status, notes, created_at)
+                 VALUES ('cursor', $1, $2, $3, 'active', 'Auto registered', NOW())
+                 ON CONFLICT (platform, email) DO UPDATE
+                   SET password = EXCLUDED.password,
+                       token = COALESCE(EXCLUDED.token, accounts.token),
+                       status = 'active'`,
+                [acc.email, acc.password, acc.token ?? null]
+              ).catch(() => {});
+            }).catch(() => {});
           }
         } else {
           job.logs.push({ type: ev.type === "success" ? "success" : ev.type === "error" ? "error" : "log", message: ev.message });
           if (ev.type === "success") {
+            // push to job.accounts immediately so notifier can see it
+            (function() {
+              const _m = ev.message.match(/[\w.+\-]+@[\w.\-]+/);
+              const _pw = ev.message.match(/密码[：:]\s*(\S+)/);
+              if (_m) {
+                const _exists = (job.accounts as Array<{email:string}>).find(a => a.email === _m[0]);
+                if (!_exists) job.accounts.push({ email: _m[0], password: _pw?.[1] ?? "" });
+              }
+            })();
             import("../db.js").then(({ execute: dbExec }) => {
               const m = ev.message.match(/\S+@\S+/);
               const pwm = ev.message.match(/密码:\s*(\S+)/);
@@ -1472,11 +1496,10 @@ router.post("/tools/cursor/register", async (req, res) => {
     }
   });
 
-  child.on("close", (code) => {
-    job.status = code === 0 ? "done" : "failed";
+  child.on("close", async (code) => {
     const ok = job.accounts.length;
     job.logs.push({ type: code === 0 ? "done" : "error", message: `任务结束  成功: ${ok} / ${n}` });
-    job.exitCode = code;
+    await jobQueue.finish(jobId, code ?? -1, code === 0 ? "done" : "failed");
   });
 });
 
@@ -1536,7 +1559,7 @@ interface RandomUserResult {
   email: string;
   login: { username: string; password: string };
   phone: string;
-  dob: { date: string };
+  dob: { date: string; age: number };
 }
 
 router.get("/tools/info-generate", async (req, res) => {
@@ -2052,6 +2075,95 @@ async function fetchViaImap(
     setTimeout(() => { child.kill(); resolve({ success: false, error: "IMAP 超时（30s）" }); }, 30000);
   });
 }
+
+
+// ── 批量 ROPC 验证 + 自动删除风控账号 ─────────────────────────────────────────
+// 删除条件：AADSTS50034(不存在) | AADSTS50126(密码错) | AADSTS53003(CA封禁)
+// 保留条件：need_mfa | imap_disabled | connection_error（账号存在，只是访问受限）
+router.post("/tools/outlook/purge-invalid", async (req, res) => {
+  const { ids, dry_run = false } = req.body as { ids?: number[]; dry_run?: boolean };
+  try {
+    const { query: dbQ, execute: dbE } = await import("../db.js");
+
+    const rows = await dbQ<{ id: number; email: string; password: string | null }>(
+      ids?.length
+        ? "SELECT id, email, password FROM accounts WHERE platform='outlook' AND id = ANY($1::int[])"
+        : "SELECT id, email, password FROM accounts WHERE platform='outlook' AND password IS NOT NULL",
+      ids?.length ? [ids] : []
+    );
+
+    const PURGE_CODES = ["AADSTS50034", "AADSTS50126", "AADSTS53003"];
+    const KEEP_ERRS  = ["need_mfa", "imap_disabled", "connection_error", "pending"];
+
+    const purged:  Array<{ id: number; email: string; reason: string }> = [];
+    const kept:    Array<{ id: number; email: string; reason: string }> = [];
+    const valid:   Array<{ id: number; email: string }> = [];
+
+    for (const acc of rows) {
+      if (!acc.password) { kept.push({ id: acc.id, email: acc.email, reason: "no_password" }); continue; }
+
+      // ROPC 验证
+      const tokenRes = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "password",
+          client_id:  ROPC_CID,
+          username:   acc.email,
+          password:   acc.password,
+          scope:      ROPC_SCO,
+        }).toString(),
+      });
+      const td = await tokenRes.json() as {
+        access_token?: string; refresh_token?: string;
+        error?: string; error_description?: string;
+      };
+
+      if (td.access_token) {
+        // 通过：保存 token，标记 active
+        if (!dry_run) {
+          await dbE(
+            "UPDATE accounts SET token=$1, refresh_token=$2, status='active', updated_at=NOW() WHERE id=$3",
+            [td.access_token, td.refresh_token ?? null, acc.id]
+          );
+        }
+        valid.push({ id: acc.id, email: acc.email });
+        continue;
+      }
+
+      const errCode = td.error ?? "";
+      const errDesc = td.error_description ?? "";
+      const st      = ropcStatus(errCode, errDesc);
+
+      // 判断是否应该删除
+      const shouldPurge = PURGE_CODES.some(code => errDesc.includes(code));
+
+      if (shouldPurge) {
+        if (!dry_run) {
+          await dbE("DELETE FROM accounts WHERE id=$1", [acc.id]);
+        }
+        purged.push({ id: acc.id, email: acc.email, reason: st });
+      } else {
+        if (!dry_run) {
+          await dbE("UPDATE accounts SET status=$1, updated_at=NOW() WHERE id=$2", [st, acc.id]);
+        }
+        kept.push({ id: acc.id, email: acc.email, reason: st });
+      }
+    }
+
+    res.json({
+      success:  true,
+      dry_run,
+      total:    rows.length,
+      valid:    valid.length,
+      purged:   purged.length,
+      kept:     kept.length,
+      detail:   { valid, purged, kept },
+    });
+  } catch (e: unknown) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
 
 router.post("/tools/outlook/fetch-messages-by-id", async (req, res) => {
   const { accountId, folder, top, search } = req.body as {

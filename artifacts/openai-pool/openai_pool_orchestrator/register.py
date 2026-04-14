@@ -1562,10 +1562,19 @@ def run(
         emitter.info(f"注册表单提交状态: {signup_resp.status_code}", step="signup")
         emitter.info(f"Register response headers: {dict(signup_resp.headers)}", step="signup")
         if signup_resp.status_code != 200:
+            response_text = str(signup_resp.text or "")
+            error_code = ""
+            try:
+                error_payload = signup_resp.json() if response_text else {}
+                error_code = str((error_payload.get("error") or {}).get("code") or "")
+            except Exception:
+                error_code = ""
             emitter.error(
-                f"注册表单提交失败（状态码 {signup_resp.status_code}）: {str(signup_resp.text or '')[:500]}",
+                f"注册表单提交失败（状态码 {signup_resp.status_code}）: {response_text[:500]}",
                 step="signup",
             )
+            if signup_resp.status_code == 400 and error_code == "invalid_auth_step":
+                raise RegistrationHardStop("OpenAI 硬拒绝注册流程: invalid_auth_step")
             return None
 
         # ------- 步骤6：发送 OTP 验证码 -------

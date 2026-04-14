@@ -5,7 +5,7 @@
 import { PersistenceManager, type JobSnapshot } from './persistence-manager.js';
 
 type LogEntry = { type: string; message: string };
-type Account  = { email: string; password: string };
+type Account  = { email: string; password: string; username?: string; token?: string };
 
 export interface Job extends JobSnapshot {
   _child?: { kill: () => void };

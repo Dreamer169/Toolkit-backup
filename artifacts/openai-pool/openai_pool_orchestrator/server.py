@@ -1508,7 +1508,8 @@ class TaskState:
                         self.stop_reason = "registration_disallowed"
                         _save_state(self.success_count, self.fail_count)
                     self.stop_event.set()
-                    attempt_emitter.error(f"{prefix}{e}", step="create_account")
+                    hard_stop_step = "signup" if "invalid_auth_step" in str(e) else "create_account"
+                    attempt_emitter.error(f"{prefix}{e}", step=hard_stop_step)
 
                 except Exception as e:
                     mail_router.report_failure(provider_name)

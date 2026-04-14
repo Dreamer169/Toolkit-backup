@@ -2,14 +2,14 @@
  * PersistenceManager — 基于 MemoryManager 适配
  * 将任务状态持久化到 PostgreSQL，解决重启后任务丢失问题
  */
-import { execute } from '../db.js';
+import { execute, query } from '../db.js';
 
 export interface JobSnapshot {
   jobId: string;
   status: string;
   startedAt: number;
   logs: Array<{ type: string; message: string }>;
-  accounts: Array<{ email: string; password: string }>;
+  accounts: Array<{ email: string; password: string; username?: string; token?: string }>;
   exitCode: number | null;
 }
 
@@ -49,10 +49,10 @@ export class PersistenceManager {
 
   static async load(jobId: string): Promise<JobSnapshot | null> {
     await this.init();
-    const rows = await execute(
+    const rows = await query<Record<string, unknown>>(
       'SELECT * FROM job_snapshots WHERE job_id = $1',
       [jobId]
-    ) as Array<Record<string, unknown>>;
+    );
     if (!rows.length) return null;
     const r = rows[0];
     return {
@@ -67,9 +67,9 @@ export class PersistenceManager {
 
   static async loadAll(): Promise<JobSnapshot[]> {
     await this.init();
-    const rows = await execute(
+    const rows = await query<Record<string, unknown>>(
       'SELECT * FROM job_snapshots ORDER BY started_at DESC LIMIT 100'
-    ) as Array<Record<string, unknown>>;
+    );
     return rows.map(r => ({
       jobId: r.job_id as string,
       status: r.status as string,

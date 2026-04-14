@@ -1043,6 +1043,160 @@ class TempMailPlusProvider(MailProvider):
                 time.sleep(5)
         return ""
 
+
+# ==================== Outlook Graph (已有账号) ====================
+
+class OutlookGraphProvider(MailProvider):
+    """
+    使用数据库中已有的 Outlook 账号，通过 Microsoft Graph API 读取 OTP 验证码。
+    配置项：
+      api_server  - 本地 API 服务地址，默认 http://localhost:8080
+      accounts    - Outlook 邮箱列表（逗号分隔字符串或 list）
+    """
+
+    GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+    def __init__(
+        self,
+        api_server: str = "http://localhost:8080",
+        accounts=None,
+    ):
+        self._api_server = api_server.rstrip("/")
+        if isinstance(accounts, str):
+            self._accounts: List[str] = [a.strip() for a in accounts.split(",") if a.strip()]
+        else:
+            self._accounts = list(accounts or [])
+        self._idx = 0
+        self._lock = threading.Lock()
+        # 跨 wait_for_otp 调用共享已读邮件ID（key=email）
+        self._global_seen: Dict[str, set] = {}
+
+    def _next_email(self) -> str:
+        with self._lock:
+            if not self._accounts:
+                raise RuntimeError("OutlookGraphProvider: 未配置 accounts")
+            email = self._accounts[self._idx % len(self._accounts)]
+            self._idx += 1
+            return email
+
+    def _get_token(self, email: str) -> str:
+        try:
+            resp = _requests.get(
+                f"{self._api_server}/api/data/accounts",
+                params={"limit": 100, "platform": "outlook"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                for acc in resp.json().get("data", []):
+                    if acc.get("email", "").lower() == email.lower():
+                        return acc.get("token", "") or ""
+        except Exception as exc:
+            logger.warning("OutlookGraphProvider._get_token: %s", exc)
+        return ""
+
+    def _refresh_token(self, email: str) -> str:
+        try:
+            resp = _requests.post(
+                f"{self._api_server}/api/tools/outlook/refresh-token",
+                json={"email": email},
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success"):
+                    return data.get("access_token", "") or data.get("token", "") or ""
+        except Exception as exc:
+            logger.warning("OutlookGraphProvider._refresh_token: %s", exc)
+        return ""
+
+    def _read_inbox(self, access_token: str) -> List[Dict]:
+        try:
+            resp = _requests.get(
+                f"{self.GRAPH_BASE}/me/mailFolders/inbox/messages",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={
+                    "": 20,
+                    "": "receivedDateTime desc",
+                    "": "id,subject,from,body,receivedDateTime",
+                },
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("value", [])
+        except Exception as exc:
+            logger.warning("OutlookGraphProvider._read_inbox: %s", exc)
+        return []
+
+    def create_mailbox(self, proxy: str = "", proxy_selector=None) -> Tuple[str, str]:
+        email = self._next_email()
+        token = self._get_token(email)
+        if not token:
+            token = self._refresh_token(email)
+        if not token:
+            raise RuntimeError(f"OutlookGraphProvider: 无法获取 {email} 的 token")
+        return email, token
+
+    def wait_for_otp(
+        self,
+        auth_credential: str,
+        email: str,
+        proxy: str = "",
+        proxy_selector=None,
+        timeout: int = 120,
+        stop_event=None,
+    ) -> str:
+        import datetime
+        access_token = auth_credential
+        start = time.time()
+        # 使用实例级共享 seen_ids，避免多次调用时重复使用同一封 OTP 邮件
+        with self._lock:
+            if email not in self._global_seen:
+                self._global_seen[email] = set()
+            seen_ids = self._global_seen[email]
+        # 只看15分钟内收到的邮件，不预加载历史邮件
+        cutoff_ts = start - 900  # 15分钟前
+        while True:
+            if stop_event and stop_event.is_set():
+                return ""
+            elapsed = time.time() - start
+            if elapsed > 0:
+                time.sleep(min(6, max(0, timeout - elapsed)))
+            if time.time() - start > timeout:
+                break
+            msgs = self._read_inbox(access_token)
+            if not msgs:
+                new_tok = self._refresh_token(email)
+                if new_tok:
+                    access_token = new_tok
+                    msgs = self._read_inbox(access_token)
+            for msg in msgs:
+                mid = msg.get("id", "")
+                if not mid or mid in seen_ids:
+                    continue
+                # 时间过滤：忽略15分钟前的邮件
+                recv_str = msg.get("receivedDateTime", "") or ""
+                if recv_str:
+                    try:
+                        recv_str_clean = recv_str.replace("Z", "+00:00")
+                        recv_dt = datetime.datetime.fromisoformat(recv_str_clean)
+                        recv_ts = recv_dt.timestamp()
+                        if recv_ts < cutoff_ts:
+                            seen_ids.add(mid)  # 太老的直接跳过
+                            continue
+                    except Exception:
+                        pass
+                seen_ids.add(mid)
+                sender = str((msg.get("from") or {}).get("emailAddress", {}).get("address", "") or "").lower()
+                subject = str(msg.get("subject", "") or "").lower()
+                if not any(k in sender or k in subject for k in ("openai", "noreply@tm", "verification", "verify", "code")):
+                    continue
+                body = str((msg.get("body") or {}).get("content", "") or "")
+                code = _extract_code(body)
+                if code:
+                    return code
+        return ""
+
+
 # ==================== 工厂函数 ====================
 
 
@@ -1078,6 +1232,11 @@ def create_provider_by_name(provider_type: str, mail_cfg: Dict[str, Any]) -> Mai
         )
     elif provider_type == "mailtm":
         return MailTmProvider(api_base=api_base or "https://api.mail.tm")
+    elif provider_type in ("outlook_graph", "outlook"):
+        return OutlookGraphProvider(
+            api_server=mail_cfg.get("api_server", "http://localhost:8080"),
+            accounts=mail_cfg.get("accounts", []),
+        )
     raise ValueError(f"未知邮箱提供商: {provider_type}")
 
 

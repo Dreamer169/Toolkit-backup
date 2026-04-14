@@ -548,9 +548,9 @@ class PatchrightController(BaseController):
                     or ('hsprotect.net' in low and '/api/' in low)):
                 if url not in self._net_audio_urls:
                     self._net_audio_urls.append(url)
-                    print(f[captcha] 🌐 [早期拦截] 音频URL: {url[:120]}, flush=True)
-        page.on(request, _on_audio_req)
-        print([captcha] ✅ 音频URL拦截器已安装（在所有按钮点击前）, flush=True)
+                    print(f"[captcha] 🌐 [早期拦截] 音频URL: {url[:120]}", flush=True)
+        page.on("request", _on_audio_req)
+        print("[captcha] ✅ 音频URL拦截器已安装（在所有按钮点击前）", flush=True)
 
         # ── 方式1：Enter键法（等blob URL → Enter通过）──────────────────
         enter_ok = self._try_enter_challenge_patchright(page)
@@ -1204,7 +1204,7 @@ class PatchrightController(BaseController):
         _net_urls = getattr(self, '_net_audio_urls', [])
         if _net_urls:
             audio_url = _net_urls[0]
-            print(f[captcha] ✅ 使用早期网络拦截URL: {audio_url[:100]}, flush=True)
+            print(f"[captcha] ✅ 使用早期网络拦截URL: {audio_url[:100]}", flush=True)
 
         def _scan_frames_for_audio(frames):
             nonlocal audio_url, audio_frame, input_frame

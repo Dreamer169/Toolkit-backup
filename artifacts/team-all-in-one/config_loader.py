@@ -672,7 +672,7 @@ def _get_fresh_access_token(team: dict, tag: str = ""):
         # 降级: 直接使用 auth_token
         return team.get("auth_token", "")
 
-    s = curl_requests.Session(verify=False, impersonate="chrome120")
+    s = curl_requests.Session(verify=False, impersonate="chrome136")
     if DEFAULT_PROXY:
         s.proxies = {"http": DEFAULT_PROXY, "https": DEFAULT_PROXY}
     s.cookies.set("__Secure-next-auth.session-token", session_token, domain="chatgpt.com")
@@ -701,7 +701,7 @@ def invite_to_team(email: str, team: dict, tag: str = ""):
     # 获取 fresh access token
     auth_token = _get_fresh_access_token(team, tag)
 
-    session = curl_requests.Session(verify=False, impersonate="chrome120")
+    session = curl_requests.Session(verify=False, impersonate="chrome136")
     if DEFAULT_PROXY:
         session.proxies = {"http": DEFAULT_PROXY, "https": DEFAULT_PROXY}
 
@@ -1902,7 +1902,7 @@ def register_team_master(proxy=None):
 
 def get_team_info_from_session(session_token, proxy=None):
     """使用 session_token 获取 Team 信息（名称、ID、AccessToken、SessionToken）"""
-    s = curl_requests.Session(verify=False, impersonate="chrome120")
+    s = curl_requests.Session(verify=False, impersonate="chrome136")
     if proxy:
         s.proxies = {"http": proxy, "https": proxy}
     s.cookies.set("__Secure-next-auth.session-token", session_token, domain="chatgpt.com")
@@ -1980,10 +1980,38 @@ def get_team_info_from_session(session_token, proxy=None):
 
 # ================= 并发批量注册 =================
 
-def _register_one(idx, total, proxy, output_file):
+def _register_one(idx, total, proxy, output_file, use_xray=False):
     """单个注册任务（线程内运行）：DuckMail 创建 → 注册 → Team 邀请 → Codex OAuth"""
+    _xray_inst = None
+    _xray_job_id = None
     reg = None
     try:
+        if use_xray:
+            try:
+                import json as _json, sys as _sys
+                _api_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api-server")
+                if _api_dir not in _sys.path:
+                    _sys.path.insert(0, _api_dir)
+                import cf_ip_pool as _cfp
+                import xray_relay as _xr
+                _sf = "/tmp/cf_pool_state.json"
+                if os.path.exists(_sf):
+                    _cfp._available[:] = _json.load(open(_sf)).get("available", [])
+                _xray_job_id = f"gpt_reg_{idx}_{int(time.time())}"
+                _ip = _cfp.acquire_ip(_xray_job_id, auto_refresh=True,
+                                      log_cb=lambda m: print(f"  [xray] {m}", flush=True))
+                if _ip:
+                    _xray_inst = _xr.XrayRelay(_ip["ip"])
+                    if _xray_inst.start(timeout=10.0):
+                        proxy = _xray_inst.socks5_url
+                        print(f"  [xray] CF节点: {_ip['ip']} ({_ip['latency']}ms) -> {proxy}", flush=True)
+                    else:
+                        _xray_inst.stop(); _xray_inst = None
+                        print("  [xray] 启动失败，回退直连代理", flush=True)
+                else:
+                    print("  [xray] CF池无可用IP，回退直连代理", flush=True)
+            except Exception as _xe:
+                print(f"  [xray] 初始化失败: {_xe}，回退直连代理", flush=True)
         reg = ChatGPTRegister(proxy=proxy, tag=f"{idx}")
 
         # 1. 创建 DuckMail 临时邮箱
@@ -2045,16 +2073,26 @@ def _register_one(idx, total, proxy, output_file):
             print(f"\n[FAIL] [{idx}] 注册失败: {error_msg}")
             traceback.print_exc()
         return False, None, error_msg
+    finally:
+        if _xray_inst:
+            try: _xray_inst.stop()
+            except Exception: pass
+        if _xray_job_id:
+            try:
+                import cf_ip_pool as _cfp2
+                _cfp2.release_ip(_xray_job_id)
+            except Exception: pass
 
 
 def run_batch(total_accounts: int = 4, output_file="registered_accounts.txt",
-              max_workers=1, proxy=None):
+              max_workers=1, proxy=None, use_xray=False):
     """并发批量注册 - DuckMail 临时邮箱 + Team 邀请 + Codex OAuth"""
     actual_workers = min(max_workers, total_accounts)
     print(f"\n{'#'*60}")
     print(f"  ChatGPT 批量自动注册 (纯协议版)")
     print(f"  注册数量: {total_accounts} | 并发数: {actual_workers}")
     print(f"  GPTMail: {GPTMAIL_BASE}")
+    print(f"  xray: {'开启 (CF IP池)' if use_xray else '关闭 (直连代理)'}")
     print(f"  Teams: {len(TEAMS)} 个")
     print(f"  OAuth: {'开启' if ENABLE_OAUTH else '关闭'} | required: {'是' if OAUTH_REQUIRED else '否'}")
     if ENABLE_OAUTH:
@@ -2071,7 +2109,7 @@ def run_batch(total_accounts: int = 4, output_file="registered_accounts.txt",
     with ThreadPoolExecutor(max_workers=actual_workers) as executor:
         futures = {}
         for idx in range(1, total_accounts + 1):
-            future = executor.submit(_register_one, idx, total_accounts, proxy, output_file)
+            future = executor.submit(_register_one, idx, total_accounts, proxy, output_file, use_xray)
             futures[future] = idx
 
         for future in as_completed(futures):

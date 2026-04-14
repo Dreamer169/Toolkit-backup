@@ -163,7 +163,7 @@ router.get("/data/emails", async (req, res) => {
 router.post("/data/emails", async (req, res) => {
   try {
     const { address, password, provider = "mailtm", token, status = "active", notes } = req.body;
-    if (!address || !password) { res.status(400).json({ success: false, error: "address 和 password 必填" }); return; }
+    if (!address) { res.status(400).json({ success: false, error: "address 必填" }); return; }
     const row = await queryOne(
       `INSERT INTO temp_emails (address,password,provider,token,status,notes)
        VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (address) DO UPDATE SET password=$2,token=$4,status=$5 RETURNING *`,

@@ -112,13 +112,15 @@ import Monitor from "@/pages/Monitor";
 import CursorRegister from "@/pages/CursorRegister";
 import Sub2ApiManager from "@/pages/Sub2ApiManager";
 import MailCenter from "@/pages/MailCenter";
+import AIAssistant from "@/pages/AIAssistant";
 
 const queryClient = new QueryClient();
 
-type Tab = "home" | "email" | "bulk-email" | "free-email" | "keycheck" | "tokencheck" | "ip" | "info" | "machine-reset" | "fingerprint" | "outlook" | "mail-center" | "cursor-register" | "sub2api" | "team-register" | "openai-pool" | "data-manager" | "full-workflow" | "monitor";
+type Tab = "home" | "agent" | "email" | "bulk-email" | "free-email" | "keycheck" | "tokencheck" | "ip" | "info" | "machine-reset" | "fingerprint" | "outlook" | "mail-center" | "cursor-register" | "sub2api" | "team-register" | "openai-pool" | "data-manager" | "full-workflow" | "monitor";
 
 const tabs: { id: Tab; label: string; icon: string; badge?: string }[] = [
   { id: "home",            label: "工具导航",        icon: "🗂️" },
+  { id: "agent",           label: "任务中枢",        icon: "🧭", badge: "主功能" },
   { id: "monitor",         label: "实时监控",        icon: "📡", badge: "Live" },
   { id: "full-workflow",   label: "完整工作流",       icon: "🔗", badge: "一键生成" },
   { id: "data-manager",    label: "数据管理中心",     icon: "🗄️", badge: "持久化" },
@@ -208,6 +210,7 @@ function App() {
         ) : (
           <main className="max-w-7xl mx-auto px-4 py-8">
             {tab === "home" && <Home />}
+            {tab === "agent" && <AIAssistant onNavigate={(nextTab) => setTab(nextTab as Tab)} />}
             {tab === "email" && <TempEmail />}
             {tab === "bulk-email" && <BulkEmail />}
             {tab === "free-email" && <FreeEmail />}

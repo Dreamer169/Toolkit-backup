@@ -101,6 +101,8 @@ export default function MailCenter() {
   const [batchResults, setBatchResults] = useState<{ email: string; ok: boolean; error?: string }[]>([]);
   const [verifyResults, setVerifyResults] = useState<VerifyResult[]>([]);
   const [verifying, setVerifying]         = useState(false);
+  const [purging,   setPurging]           = useState(false);
+  const [purgeStats, setPurgeStats]       = useState<{ valid: number; purged: number; kept: number } | null>(null);
   const [batchOAuth, setBatchOAuth]       = useState<BatchOAuthState | null>(null);
   const [batchOAuthBusy, setBatchOAuthBusy] = useState(false);
   const pollRef                           = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -204,6 +206,24 @@ export default function MailCenter() {
     if (d.success) {
       setVerifyResults(d.results ?? []);
       await loadAccounts();
+    }
+  };
+
+  // ── 一键清洗风控账号（ROPC 验证 + 自动删除） ─────────────────────────────
+  const purgeInvalid = async () => {
+    if (!confirm('将对所有 Outlook 账号执行 ROPC 验证，不可逆删除确认已风控账号（密码错误/账号不存在/CA封禁），确定继续？')) return;
+    setPurging(true); setPurgeStats(null);
+    const d = await fetch(`${API}/tools/outlook/purge-invalid`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).then(r => r.json()).catch(() => ({ success: false, error: '网络错误' }));
+    setPurging(false);
+    if (d.success) {
+      setPurgeStats({ valid: d.valid, purged: d.purged, kept: d.kept });
+      await loadAccounts();
+    } else {
+      alert(d.error ?? '清洗失败');
     }
   };
 
@@ -418,6 +438,22 @@ export default function MailCenter() {
               >✕</button>
             )}
           </div>
+          {/* 一键清洗风控账号 */}
+          <button
+            onClick={purgeInvalid}
+            disabled={purging || accounts.length === 0}
+            className="w-full py-1.5 bg-red-700/50 hover:bg-red-700/70 disabled:opacity-50 rounded text-xs text-white font-medium transition-colors"
+            title="ROPC 验证全部账号，自动删除密码错误/不存在/CA封禁的风控账号"
+          >
+            {purging ? '清洗中…' : '🗑️ 一键清洗风控'}
+          </button>
+          {purgeStats && (
+            <div className="text-[10px] px-1 py-0.5 rounded bg-[#21262d] text-gray-400 flex gap-2">
+              <span className="text-emerald-400">✓ 有效 {purgeStats.valid}</span>
+              <span className="text-red-400">✗ 删除 {purgeStats.purged}</span>
+              <span className="text-amber-400">? 待查 {purgeStats.kept}</span>
+            </div>
+          )}
           {/* 批量 OAuth 授权按钮 */}
           {accounts.some(a => !hasOAuth(a)) && (
             <button

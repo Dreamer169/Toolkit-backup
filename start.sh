@@ -67,12 +67,25 @@ CREATE TABLE IF NOT EXISTS configs (
 );
 CREATE TABLE IF NOT EXISTS proxies (
   id SERIAL PRIMARY KEY,
-  url TEXT NOT NULL UNIQUE,
+  raw TEXT NOT NULL,
+  formatted TEXT NOT NULL UNIQUE,
+  host TEXT,
+  port INT,
+  username TEXT,
+  password TEXT,
   status TEXT DEFAULT 'idle',
   used_count INT DEFAULT 0,
   last_used TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- 如果旧表存在，补充缺失列
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS raw TEXT;
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS formatted TEXT;
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS host TEXT;
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS port INT;
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS password TEXT;
+UPDATE proxies SET formatted = url, raw = url WHERE formatted IS NULL AND url IS NOT NULL;
 CREATE TABLE IF NOT EXISTS job_snapshots (
   job_id TEXT PRIMARY KEY,
   status TEXT NOT NULL DEFAULT 'running',
@@ -108,7 +121,7 @@ echo "  前端 OK (port $FRONTEND_PORT)"
 echo "[4/6] 启动 ngrok..."
 pkill ngrok 2>/dev/null || true
 sleep 1
-nohup ngrok http $FRONTEND_PORT --request-header-add 'ngrok-skip-browser-warning:true' --log=stdout > $LOG_DIR/ngrok.log 2>&1 &
+nohup ngrok http $FRONTEND_PORT --domain=tried-habitant-kindly.ngrok-free.dev --request-header-add 'ngrok-skip-browser-warning:true' --log=stdout > $LOG_DIR/ngrok.log 2>&1 &
 sleep 5
 NGROK_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | head -1 | cut -d'"' -f4)
 echo "  ngrok OK: $NGROK_URL"
@@ -123,6 +136,8 @@ curl -sf http://localhost:6100/health > /dev/null && echo "  FakeMail Bridge OK 
 echo "[6/6] 启动 Xray..."
 pkill xray 2>/dev/null || true
 sleep 1
+
+node /workspaces/Toolkit/xray-update-ip.js
 nohup xray run -c /workspaces/Toolkit/xray.json > $LOG_DIR/xray.log 2>&1 &
 sleep 3
 XRAY_IP=$(curl -s --proxy socks5://127.0.0.1:10808 --connect-timeout 10 https://api.ipify.org 2>/dev/null)

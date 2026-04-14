@@ -122,6 +122,100 @@ def mailtm_wait_otp(token: str, timeout: int = 90) -> str | None:
     return None
 
 
+
+
+# ─── Outlook.com 浏览器 OTP 读取（替代 IMAP） ──────────────────────────────
+async def outlook_web_wait_otp_async(email: str, password: str, timeout: int = 120) -> str | None:
+    """通过 Playwright 登录 Outlook.com，轮询收件箱获取 Cursor OTP 验证码。"""
+    try:
+        from patchright.async_api import async_playwright
+    except ImportError:
+        from playwright.async_api import async_playwright
+
+    deadline = time.time() + timeout
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+        )
+        ctx = await browser.new_context(locale="en-US", timezone_id="America/New_York")
+        page = await ctx.new_page()
+        try:
+            emit("info", "🔐 登录 Outlook.com 准备接收验证码...")
+            await page.goto("https://login.live.com/login.srf?wa=wsignin1.0", timeout=30000)
+            await page.wait_for_timeout(1500)
+
+            # 填邮箱
+            await page.fill("input[type='email'], input[name='loginfmt']", email)
+            await page.click("input[type='submit'], button[type='submit']")
+            await page.wait_for_timeout(2000)
+
+            # 填密码
+            try:
+                await page.fill("input[type='password'], input[name='passwd']", password, timeout=8000)
+                await page.click("input[type='submit'], button[type='submit']")
+                await page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
+            # 处理「保持登录」弹窗
+            try:
+                btn = page.locator("input[value='Yes'],input[value='No'],button:has-text('Yes'),button:has-text('No')")
+                if await btn.count() > 0:
+                    await btn.first.click()
+                    await page.wait_for_timeout(2000)
+            except Exception:
+                pass
+
+            emit("info", "📬 进入 Outlook 收件箱，等待 Cursor 验证码邮件...")
+            await page.goto("https://outlook.live.com/mail/0/inbox", timeout=30000)
+            await page.wait_for_timeout(4000)
+
+            seen = set()
+            while time.time() < deadline:
+                await page.reload()
+                await page.wait_for_timeout(3000)
+                try:
+                    items = page.locator("div[role='option'], [data-convid]")
+                    count = await items.count()
+                    for i in range(min(count, 15)):
+                        item = items.nth(i)
+                        conv_id = await item.get_attribute("data-convid") or str(i)
+                        item_text = await item.inner_text()
+                        if conv_id in seen:
+                            continue
+                        if not re.search(r'cursor|verification|code|verify', item_text, re.I):
+                            continue
+                        seen.add(conv_id)
+                        await item.click()
+                        await page.wait_for_timeout(2000)
+                        body = await page.locator("[role='main'], .ReadingPaneContent").inner_text()
+                        m = re.search(r'(\d{6})', body)
+                        if m:
+                            emit("info", f"✅ Outlook 收到验证码: {m.group(1)}")
+                            return m.group(1)
+                except Exception:
+                    pass
+                await asyncio.sleep(8)
+        finally:
+            await browser.close()
+    return None
+
+
+def outlook_web_wait_otp(email: str, password: str, timeout: int = 120) -> str | None:
+    """同步包装：在新事件循环中运行 Outlook 浏览器 OTP 轮询。"""
+    try:
+        loop = asyncio.new_event_loop()
+        return loop.run_until_complete(outlook_web_wait_otp_async(email, password, timeout))
+    except Exception as e:
+        emit("error", f"Outlook web OTP 失败: {e}")
+        return None
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+
 # ─── [j-cli CDP] 网络拦截：捕获 session token ───────────────────────────────
 # 来自 LingoJack/j 的 CDP 思想：拦截浏览器网络响应，直接从 API 响应中提取 token
 # j-cli 用 CDP 协议拦截所有 HTTP 响应；这里用 Playwright 的 response 事件实现相同效果
@@ -313,7 +407,7 @@ async def find_input_smart(page, *keywords) -> str | None:
 
 
 # ─── 主注册函数 ──────────────────────────────────────────────────────────────
-async def register_one(proxy: str, headless: bool = True) -> dict | None:
+async def register_one(proxy: str, headless: bool = True, provided_email: str = "", provided_email_password: str = "") -> dict | None:
     """
     注册单个 Cursor 账号
     [SheepKing AgentSessionPool] session_state 隔离每个注册任务的状态
@@ -331,11 +425,16 @@ async def register_one(proxy: str, headless: bool = True) -> dict | None:
     first_name, last_name = gen_name()
     password = gen_password()
 
-    try:
-        email, _epw, mail_token = mailtm_create()
-    except Exception as e:
-        emit("error", f"❌ 临时邮箱创建失败: {e}")
-        return None
+    mail_token = None
+    if provided_email:
+        email = provided_email
+        emit("info", f"📧 使用 Outlook 邮箱: {email}")
+    else:
+        try:
+            email, _epw, mail_token = mailtm_create()
+        except Exception as e:
+            emit("error", f"❌ 临时邮箱创建失败: {e}")
+            return None
 
     session_state.update({"email": email, "password": password, "name": f"{first_name} {last_name}"})
     emit("info", f"👤 {first_name} {last_name} | 📧 {email}")
@@ -382,17 +481,27 @@ async def register_one(proxy: str, headless: bool = True) -> dict | None:
             await page.goto("https://authenticator.cursor.sh/sign-up", timeout=60000,
                            wait_until="domcontentloaded")
             # 等 CF 挑战通过（最多 30s 轮询，每秒检测一次）
-            emit("info", "⏳ 等待 CF 挑战通过（最多30s）…")
+            emit("info", "⏳ 等待 CF 挑战通过（最多90s）…")
             _cf_start = __import__("time").time()
-            while __import__("time").time() - _cf_start < 30:
+            _cf_passed = False
+            while __import__("time").time() - _cf_start < 90:
                 _url = page.url
                 _title = await page.title()
-                # CF 挑战页面：title 含 Just a moment 或 URL 没有变化到 sign-up
                 if "Just a moment" not in _title and "challenge" not in _url.lower():
+                    _cf_passed = True
                     break
-                await page.wait_for_timeout(1000)
-            await page.wait_for_timeout(2000)
-            emit("info", "📄 已打开注册页面")
+                await page.wait_for_timeout(2000)
+            if not _cf_passed:
+                emit("warn", "⚠️ CF挑战90s未通过，尝试刷新页面...")
+                await page.reload(wait_until="domcontentloaded")
+                await page.wait_for_timeout(8000)
+            await page.wait_for_timeout(3000)
+            _final_title = await page.title()
+            emit("info", f"📄 页面加载完成（title: {_final_title}）")
+            if "Just a moment" in _final_title:
+                emit("error", "❌ CF挑战未通过，跳过此任务")
+                await browser.close()
+                return None
 
             # Step 2: 填写姓名（快照方式 + CSS 降级）
             first_sel = await find_input_smart(page, "first", "name")
@@ -437,9 +546,14 @@ async def register_one(proxy: str, headless: bool = True) -> dict | None:
             await page.wait_for_timeout(2000)
 
             # 并行等待 OTP
-            otp = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: mailtm_wait_otp(mail_token, timeout=90)
-            )
+            if provided_email and provided_email_password:
+                otp = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: outlook_web_wait_otp(provided_email, provided_email_password, timeout=120)
+                )
+            else:
+                otp = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: mailtm_wait_otp(mail_token, timeout=90)
+                )
             if not otp:
                 emit("error", "❌ 超时未收到验证码邮件")
                 await browser.close()
@@ -548,6 +662,8 @@ async def main():
     parser.add_argument("--proxy", type=str, default="")
     parser.add_argument("--headless", type=str, default="true")
     parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--email", type=str, default="", help="使用已有邮箱注册（留空则自动创建 mailtm 邮箱）")
+    parser.add_argument("--email-password", type=str, default="", dest="email_password", help="邮箱密码（用于 Outlook.com 登录读取 OTP）")
     args = parser.parse_args()
 
     headless = args.headless.lower() != "false"
@@ -561,7 +677,7 @@ async def main():
 
     async def limited_register():
         async with sem:
-            return await register_one(proxy=args.proxy, headless=headless)
+            return await register_one(proxy=args.proxy, headless=headless, provided_email=args.email, provided_email_password=args.email_password)
 
     tasks = [limited_register() for _ in range(count)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
