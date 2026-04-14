@@ -221,7 +221,7 @@ export default function FullWorkflow() {
           const ok = accts.length > 0;
           const email = accts[0]?.email ?? data?.outlook.email;
           const password = accts[0]?.password ?? data?.outlook.password;
-          setResult({ ok, email, password, accounts: accts, msg: ok ? `✅ 注册成功！${accts.length > 1 ? `共 ${accts.length} 个账号` : "账号已激活"}` : "❌ 注册失败（CAPTCHA 无法通过——需要住宅代理）" });
+          setResult({ ok, email, password, accounts: accts, msg: ok ? `✅ 注册成功！${accts.length > 1 ? `共 ${accts.length} 个账号` : "账号已激活"}，请前往「邮件中心」点击「设备码」完成邮箱授权。` : "❌ 注册失败（CAPTCHA 无法通过——需要住宅代理）" });
           setPhase("done");
         }
       } catch {}

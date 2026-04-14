@@ -2,6 +2,8 @@ import { jobQueue } from "../lib/job-queue.js";
 import { Router, type IRouter } from "express";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { execute } from "../db.js";
+import { existsSync } from "fs";
+import path from "path";
 
 const router: IRouter = Router();
 
@@ -1290,7 +1292,7 @@ router.post("/tools/outlook/register", async (req, res) => {
     // ── 持久化到数据库 + 立即 ROPC 自动授权 ────────────────────────────────
     if (okCount > 0) {
       await (async () => {
-        const ROPC_CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c";
+        const ROPC_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
         const ROPC_SCOPE = "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access";
         for (const acc of job.accounts) {
           // 1. 保存账号
@@ -1681,7 +1683,13 @@ router.post("/tools/proxy-request", async (req, res) => {
 });
 
 // ── CF IP 代理池 ──────────────────────────────────────────────
-const CF_POOL_SCRIPT = "/home/runner/workspace/artifacts/api-server/cf_pool_api.py";
+const CF_POOL_SCRIPT = process.env["CF_POOL_SCRIPT"]
+  || [
+    path.resolve(process.cwd(), "artifacts/api-server/cf_pool_api.py"),
+    "/workspaces/Toolkit/artifacts/api-server/cf_pool_api.py",
+    "/home/runner/workspace/artifacts/api-server/cf_pool_api.py",
+  ].find((candidate) => existsSync(candidate))
+  || path.resolve(process.cwd(), "artifacts/api-server/cf_pool_api.py");
 
 router.get("/tools/cf-pool/status", async (_req, res) => {
   try {
@@ -1691,6 +1699,10 @@ router.get("/tools/cf-pool/status", async (_req, res) => {
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
     });
     if (r.stderr) console.error("[cf-pool]", r.stderr.slice(0, 200));
+    if (r.error || r.status !== 0) {
+      res.status(500).json({ success: false, error: r.error?.message || r.stderr || "cf_pool_api failed" });
+      return;
+    }
     const data = r.stdout ? JSON.parse(r.stdout) : {};
     res.json({ success: true, ...data });
   } catch (e) {
@@ -1713,6 +1725,10 @@ router.post("/tools/cf-pool/refresh", async (req, res) => {
       "--max-latency", String(maxLatency),
     ], { timeout: 45000, encoding: "utf8", env: { ...process.env, PYTHONUNBUFFERED: "1" } });
     if (r.stderr) console.error("[cf-pool refresh]", r.stderr.slice(0, 400));
+    if (r.error || r.status !== 0) {
+      res.status(500).json({ success: false, error: r.error?.message || r.stderr || "cf_pool_api failed" });
+      return;
+    }
     const data = r.stdout ? JSON.parse(r.stdout) : {};
     res.json({ success: true, ...data });
   } catch (e) {
@@ -1775,7 +1791,7 @@ router.post("/tools/outlook/save-token", async (req, res) => {
 
 // ── 批量验证微软账号有效性（ROPC 错误码诊断）────────────────────────────────
 // 错误码参考: https://learn.microsoft.com/en-us/azure/active-directory/develop/reference-aadsts-error-codes
-const ROPC_CID  = "d3590ed6-52b3-4102-aeff-aad2292ab01c";
+const ROPC_CID  = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
 const ROPC_SCO  = "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access";
 
 function ropcStatus(err?: string, desc?: string): string {
@@ -1909,101 +1925,99 @@ router.post("/tools/outlook/verify-accounts", async (req, res) => {
   }
 });
 
-// ── ROPC 一键自动授权（用存储的密码直接换 token，无需人工介入）────────────────
-// Microsoft 公共 MSAL client，适用于个人 Outlook / Hotmail 账号
-// 文档：https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth-ropc
+// ── ROPC 一键自动授权（ROPC 已被微软封锁，改为引导设备码授权）────────────────
+// 注意：微软已于2024年底对个人 Outlook/Hotmail 账号全面封锁 ROPC 密码授权
+// 解决方案：使用设备码授权 /tools/outlook/device-code（无需密码，用户扫码即可）
 router.post("/tools/outlook/auto-auth", async (req, res) => {
   const { accountId } = req.body as { accountId?: number };
   if (!accountId) { res.status(400).json({ success: false, error: "accountId 不能为空" }); return; }
   try {
-    const { query, execute } = await import("../db.js");
-    const rows = await query<{
-      id: number; email: string; password: string | null;
-    }>("SELECT id, email, password FROM accounts WHERE id=$1 AND platform='outlook'", [accountId]);
+    const { query } = await import("../db.js");
+    const rows = await query<{ id: number; email: string; refresh_token: string | null }>(
+      "SELECT id, email, refresh_token FROM accounts WHERE id=$1 AND platform=\'outlook\'", [accountId]
+    );
     const acc = rows[0];
     if (!acc) { res.status(404).json({ success: false, error: "账号不存在" }); return; }
-    if (!acc.password) {
-      res.json({ success: false, error: "数据库中没有存储该账号的密码，无法自动授权" });
+
+    // 已有 refresh_token → 直接刷新 access_token，无需用户操作
+    if (acc.refresh_token) {
+      const { execute } = await import("../db.js");
+      const r = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: OAUTH_CLIENT_ID,
+          refresh_token: acc.refresh_token,
+          scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access",
+        }).toString(),
+      });
+      const td = await r.json() as { access_token?: string; refresh_token?: string; error_description?: string };
+      if (td.access_token) {
+        await execute("UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
+          [td.access_token, td.refresh_token ?? acc.refresh_token, accountId]);
+        res.json({ success: true, email: acc.email, via: "refresh_token" });
+        return;
+      }
+      res.json({ success: false, needsDeviceFlow: true, error: `refresh_token 已失效：${td.error_description ?? "请重新设备码授权"}` });
       return;
     }
 
-    // ROPC token 请求
-    const tokenRes = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "password",
-        client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c",
-        username: acc.email,
-        password: acc.password,
-        scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access",
-      }).toString(),
+    // 无 refresh_token → 引导设备码授权
+    res.json({
+      success: false,
+      needsDeviceFlow: true,
+      error: "微软已封锁密码直连授权（AADSTS70003）。请点击「设备码」按钮，前往 microsoft.com/devicelogin 输入代码完成授权。",
     });
-    const td = await tokenRes.json() as {
-      access_token?: string; refresh_token?: string;
-      error?: string; error_description?: string;
-    };
-
-    if (!td.access_token) {
-      const msg = td.error_description ?? td.error ?? "授权失败";
-      res.json({ success: false, error: msg });
-      return;
-    }
-
-    // 保存 token
-    await execute(
-      "UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
-      [td.access_token, td.refresh_token ?? null, accountId]
-    );
-    res.json({ success: true, email: acc.email });
   } catch (e: unknown) {
     res.status(500).json({ success: false, error: String(e) });
   }
 });
 
-// ── ROPC 批量一键授权（对所有未授权账号执行自动授权）──────────────────────────
+// ── 批量一键授权（优先 refresh_token 刷新，无 refresh_token 账号提示设备码）────
 router.post("/tools/outlook/auto-auth-all", async (req, res) => {
   try {
     const { query, execute } = await import("../db.js");
     const rows = await query<{
-      id: number; email: string; password: string | null;
+      id: number; email: string; password: string | null; refresh_token: string | null;
     }>(
-      "SELECT id, email, password FROM accounts WHERE platform='outlook' AND (token IS NULL OR token='') AND password IS NOT NULL AND password != ''",
+      "SELECT id, email, password, refresh_token FROM accounts WHERE platform=\'outlook\' AND (token IS NULL OR token=\'\') ",
       []
     );
     if (rows.length === 0) {
       res.json({ success: true, results: [], msg: "没有需要授权的账号" });
       return;
     }
-    const results: Array<{ id: number; email: string; ok: boolean; error?: string }> = [];
+    const results: Array<{ id: number; email: string; ok: boolean; needsDeviceFlow?: boolean; error?: string }> = [];
     for (const acc of rows) {
-      try {
-        const tokenRes = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            grant_type: "password",
-            client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c",
-            username: acc.email,
-            password: acc.password!,
-            scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access",
-          }).toString(),
-        });
-        const td = await tokenRes.json() as {
-          access_token?: string; refresh_token?: string;
-          error?: string; error_description?: string;
-        };
-        if (td.access_token) {
-          await execute(
-            "UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
-            [td.access_token, td.refresh_token ?? null, acc.id]
-          );
-          results.push({ id: acc.id, email: acc.email, ok: true });
-        } else {
-          results.push({ id: acc.id, email: acc.email, ok: false, error: td.error_description ?? td.error ?? "失败" });
+      // 优先用 refresh_token 刷新
+      if (acc.refresh_token) {
+        try {
+          const r = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              client_id: OAUTH_CLIENT_ID,
+              refresh_token: acc.refresh_token,
+              scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access",
+            }).toString(),
+          });
+          const td = await r.json() as { access_token?: string; refresh_token?: string; error_description?: string };
+          if (td.access_token) {
+            await execute("UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE id=$3",
+              [td.access_token, td.refresh_token ?? acc.refresh_token, acc.id]);
+            results.push({ id: acc.id, email: acc.email, ok: true });
+            continue;
+          }
+          results.push({ id: acc.id, email: acc.email, ok: false, needsDeviceFlow: true, error: `refresh_token 已失效：${td.error_description ?? "需重新授权"}` });
+        } catch (e) {
+          results.push({ id: acc.id, email: acc.email, ok: false, error: String(e) });
         }
-      } catch (e) {
-        results.push({ id: acc.id, email: acc.email, ok: false, error: String(e) });
+      } else {
+        // 无 refresh_token：需要设备码授权
+        results.push({ id: acc.id, email: acc.email, ok: false, needsDeviceFlow: true,
+          error: "无 OAuth token，请使用设备码授权（点击账号旁「设备码」按钮）" });
       }
     }
     const ok = results.filter(r => r.ok).length;
@@ -2015,7 +2029,7 @@ router.post("/tools/outlook/auto-auth-all", async (req, res) => {
 
 // ── 按账号ID拉取邮件（自动刷新token）──────────────────────────────────────
 // 供邮件中心使用，前端只传账号ID，token管理完全在后端
-const DEFAULT_CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c";
+const DEFAULT_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
 
 // ── IMAP 辅助：spawn python3 outlook_imap.py ─────────────────────────────
 // 优先 XOAUTH2（access_token）→ Basic Auth 备用
@@ -2085,70 +2099,72 @@ router.post("/tools/outlook/purge-invalid", async (req, res) => {
   try {
     const { query: dbQ, execute: dbE } = await import("../db.js");
 
-    const rows = await dbQ<{ id: number; email: string; password: string | null }>(
+    const rows = await dbQ<{ id: number; email: string; password: string | null; refresh_token: string | null; token: string | null }>(
       ids?.length
-        ? "SELECT id, email, password FROM accounts WHERE platform='outlook' AND id = ANY($1::int[])"
-        : "SELECT id, email, password FROM accounts WHERE platform='outlook' AND password IS NOT NULL",
+        ? "SELECT id, email, password, refresh_token, token FROM accounts WHERE platform='outlook' AND id = ANY($1::int[])"
+        : "SELECT id, email, password, refresh_token, token FROM accounts WHERE platform='outlook'",
       ids?.length ? [ids] : []
     );
-
-    const PURGE_CODES = ["AADSTS50034", "AADSTS50126", "AADSTS53003"];
-    const KEEP_ERRS  = ["need_mfa", "imap_disabled", "connection_error", "pending"];
 
     const purged:  Array<{ id: number; email: string; reason: string }> = [];
     const kept:    Array<{ id: number; email: string; reason: string }> = [];
     const valid:   Array<{ id: number; email: string }> = [];
 
     for (const acc of rows) {
-      if (!acc.password) { kept.push({ id: acc.id, email: acc.email, reason: "no_password" }); continue; }
-
-      // ROPC 验证
-      const tokenRes = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "password",
-          client_id:  ROPC_CID,
-          username:   acc.email,
-          password:   acc.password,
-          scope:      ROPC_SCO,
-        }).toString(),
-      });
-      const td = await tokenRes.json() as {
-        access_token?: string; refresh_token?: string;
-        error?: string; error_description?: string;
-      };
-
-      if (td.access_token) {
-        // 通过：保存 token，标记 active
-        if (!dry_run) {
-          await dbE(
-            "UPDATE accounts SET token=$1, refresh_token=$2, status='active', updated_at=NOW() WHERE id=$3",
-            [td.access_token, td.refresh_token ?? null, acc.id]
-          );
+      // 优先 refresh_token → Graph API 验证（ROPC 已被微软封锁）
+      if (acc.refresh_token) {
+        const r = await fetch("https://login.microsoftonline.com/common/oauth2/v2.0/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            client_id: OAUTH_CLIENT_ID,
+            refresh_token: acc.refresh_token,
+            scope: "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access",
+          }).toString(),
+        });
+        const td = await r.json() as { access_token?: string; refresh_token?: string; error?: string; error_description?: string };
+        if (td.access_token) {
+          if (!dry_run) {
+            await dbE("UPDATE accounts SET token=$1, refresh_token=$2, status='active', updated_at=NOW() WHERE id=$3",
+              [td.access_token, td.refresh_token ?? acc.refresh_token, acc.id]);
+          }
+          valid.push({ id: acc.id, email: acc.email });
+          continue;
         }
-        valid.push({ id: acc.id, email: acc.email });
+        // refresh_token 失效：AADSTS70000 系列 → 删除账号
+        const desc = td.error_description ?? "";
+        if (desc.includes("AADSTS70008") || desc.includes("AADSTS700082") || false) {
+          // token 已过期/吊销
+          if (!dry_run) await dbE("DELETE FROM accounts WHERE id=$1", [acc.id]);
+          purged.push({ id: acc.id, email: acc.email, reason: "token_revoked" });
+        } else {
+          if (!dry_run) await dbE("UPDATE accounts SET status='error', updated_at=NOW() WHERE id=$1", [acc.id]);
+          kept.push({ id: acc.id, email: acc.email, reason: "refresh_failed:" + (td.error ?? "unknown") });
+        }
         continue;
       }
 
-      const errCode = td.error ?? "";
-      const errDesc = td.error_description ?? "";
-      const st      = ropcStatus(errCode, errDesc);
-
-      // 判断是否应该删除
-      const shouldPurge = PURGE_CODES.some(code => errDesc.includes(code));
-
-      if (shouldPurge) {
-        if (!dry_run) {
-          await dbE("DELETE FROM accounts WHERE id=$1", [acc.id]);
+      // 无 refresh_token：尝试已有 access_token 验证
+      if (acc.token) {
+        const gr = await fetch("https://graph.microsoft.com/v1.0/me?$select=mail", {
+          headers: { Authorization: "Bearer " + acc.token },
+        });
+        if (gr.ok) {
+          valid.push({ id: acc.id, email: acc.email });
+          continue;
         }
-        purged.push({ id: acc.id, email: acc.email, reason: st });
-      } else {
-        if (!dry_run) {
-          await dbE("UPDATE accounts SET status=$1, updated_at=NOW() WHERE id=$2", [st, acc.id]);
-        }
-        kept.push({ id: acc.id, email: acc.email, reason: st });
       }
+
+      // 无 token 也无 refresh_token → 无法验证，保留（需要设备码授权）
+      if (!acc.password) {
+        kept.push({ id: acc.id, email: acc.email, reason: "no_credentials" });
+        continue;
+      }
+
+      // 有密码无 token → IMAP Basic Auth（已被 MS 封锁，仅作为最后手段检测密码是否正确）
+      // 不实际删除：Basic Auth 封锁不代表账号无效，只代表需要 OAuth
+      kept.push({ id: acc.id, email: acc.email, reason: "needs_oauth" });
     }
 
     res.json({

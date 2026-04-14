@@ -98,7 +98,7 @@ export default function MailCenter() {
   const [device, setDevice]             = useState<DeviceState | null>(null);
   const [polling, setPolling]           = useState(false);
   const [copied, setCopied]             = useState("");
-  const [batchResults, setBatchResults] = useState<{ email: string; ok: boolean; error?: string }[]>([]);
+  const [batchResults, setBatchResults] = useState<{ email: string; ok: boolean; needsDeviceFlow?: boolean; error?: string; id?: number }[]>([]);
   const [verifyResults, setVerifyResults] = useState<VerifyResult[]>([]);
   const [verifying, setVerifying]         = useState(false);
   const [purging,   setPurging]           = useState(false);
@@ -170,9 +170,14 @@ export default function MailCenter() {
       setAuthOk("授权成功！正在加载邮件…");
       setNeedsAuth(false);
       await loadAccounts();
-      const updated = { ...acc, token: "ok", refresh_token: null };
+      const updated = { ...acc, token: "ok", refresh_token: acc.refresh_token };
       setSelAccount(updated);
       fetchMessages(updated, folder, search);
+    } else if (d.needsDeviceFlow) {
+      // ROPC 已被微软封锁，自动切换到设备码授权
+      setAuthError("");
+      setShowDevice(true);
+      await startDevice(acc);
     } else {
       setAuthError(d.error ?? "授权失败");
     }
@@ -189,6 +194,7 @@ export default function MailCenter() {
     if (d.success) {
       setBatchResults(d.results ?? []);
       await loadAccounts();
+      // 对需要设备码授权的账号，不自动触发（批量时由用户手动点击）
     } else {
       setBatchResults([{ email: "全部", ok: false, error: d.error }]);
     }
@@ -469,7 +475,7 @@ export default function MailCenter() {
             <div className="space-y-0.5 max-h-24 overflow-y-auto">
               {batchResults.map((r, i) => (
                 <div key={i} className={`text-[10px] truncate px-1 py-0.5 rounded ${r.ok ? "text-emerald-400" : "text-red-400"}`}>
-                  {r.ok ? "✓" : "✗"} {r.email}{!r.ok && r.error ? `: ${r.error.slice(0, 40)}` : ""}
+                  {r.ok ? "✓" : r.needsDeviceFlow ? "↗" : "✗"} {r.email}{!r.ok && r.needsDeviceFlow ? ": 请点击「设备码」授权" : (!r.ok && r.error ? ": " + r.error.slice(0, 40) : "")}
                 </div>
               ))}
             </div>
