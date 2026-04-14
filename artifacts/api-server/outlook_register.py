@@ -30,95 +30,6 @@ from faker import Faker
 
 fake = Faker("zh_CN")
 
-
-# ─── [LingoJack/j snapshot + SheepKing session_state 改进] ──────────────────
-# j-cli 核心思想: 动态页面快照取代硬编码 CSS 选择器
-# SheepKing 核心思想: 每个注册任务有独立 session_state，状态互不干扰
-
-def _page_snapshot_sync(page) -> list:
-    try:
-        return page.evaluate("""
-            () => Array.from(document.querySelectorAll(
-                'input, button, [role="button"], textarea, select'
-            )).slice(0, 80).map((el, i) => {
-                const ref = 'jref_' + i;
-                el.setAttribute('data-jref', ref);
-                let label = '';
-                if (el.id) {
-                    const lbl = document.querySelector(`label[for="${el.id}"]`);
-                    if (lbl) label = lbl.textContent.trim();
-                }
-                if (!label) {
-                    const parent = el.closest('label,[class*="field"],[class*="form"],[class*="Form"]');
-                    if (parent) label = parent.textContent.replace(el.value||'','').trim().slice(0,60);
-                }
-                return {
-                    ref, selector: `[data-jref="${ref}"]`,
-                    tag: el.tagName.toLowerCase(),
-                    type: el.type || null, name: el.name || null,
-                    placeholder: el.placeholder || null,
-                    aria_label: el.getAttribute('aria-label') || null,
-                    label, text: el.textContent?.trim().slice(0,50)||null,
-                    visible: el.offsetParent !== null,
-                };
-            })
-        """)
-    except Exception:
-        return []
-
-def find_input_smart_sync(page, *keywords) -> str | None:
-    """[j-cli snapshot] 语义关键字搜索表单字段，返回 CSS selector 或 None"""
-    snapshot = _page_snapshot_sync(page)
-    kws = [k.lower() for k in keywords]
-    for el in snapshot:
-        if not el.get("visible"):
-            continue
-        combined = " ".join(filter(None, [
-            el.get("name",""), el.get("placeholder",""),
-            el.get("aria_label",""), el.get("label",""), el.get("text",""),
-        ])).lower()
-        if any(kw in combined for kw in kws):
-            return el["selector"]
-    return None
-
-_OUTLOOK_TOKEN_URL_KW = [
-    "login.microsoftonline.com", "login.live.com", "oauth2/v2.0/token",
-    "oauth2/token", "graph.microsoft.com", "account.live.com",
-]
-_OUTLOOK_TOKEN_PATS = [
-    '"refresh_token"\\s*:\\s*"([^"]{20,})"',
-    '"access_token"\\s*:\\s*"([^"]{20,})"',
-    '"id_token"\\s*:\\s*"([^"]{20,})"',
-]
-def setup_outlook_intercept(page, session_state: dict) -> None:
-    """[j-cli 网络拦截] 从 Microsoft OAuth API 响应中自动捕获 token"""
-    import re as _re
-    def on_response(response):
-        try:
-            url = response.url
-            if not any(kw in url for kw in _OUTLOOK_TOKEN_URL_KW):
-                return
-            if response.status not in (200, 201):
-                return
-            body = response.text()
-            if not body or len(body) < 10:
-                return
-            for pat in _OUTLOOK_TOKEN_PATS:
-                m = _re.search(pat, body)
-                if m:
-                    tok = m.group(1)
-                    if len(tok) > 20:
-                        key = "refresh_token" if "refresh_token" in pat else "access_token"
-                        if not session_state.get(key):
-                            session_state[key] = tok
-                            print(f"[intercept] 🔑 捕获 {key}({len(tok)}chars) from {url[:60]}", flush=True)
-                        return
-        except Exception:
-            pass
-    page.on("response", on_response)
-
-
-
 # ─── 配置 ─────────────────────────────────────────────────────────────────────
 BOT_PROTECTION_WAIT = 11          # 秒，与原版一致
 MAX_CAPTCHA_RETRIES = 2
@@ -184,46 +95,6 @@ class BaseController:
         self.wait_time      = (wait_ms or BOT_PROTECTION_WAIT) * 1000  # ms
         self.max_retries    = max_captcha_retries
         self.captcha_solver = captcha_solver   # captcha_solver.py 中的 Solver 对象
-
-
-    def _try_fill_smart(self, page, value: str, fallback_selector: str,
-                        *keywords, delay_ms: int = 0) -> bool:
-        """
-        [新方法优先 + 旧 CSS 保底]
-        1. 先用 j-cli snapshot 语义搜索找字段
-        2. 找到且可见 → 用新方法填写
-        3. 找不到 → 回退到传统 CSS selector（原版保底）
-        返回 True 表示填写成功
-        """
-        smart_sel = find_input_smart_sync(page, *keywords)
-        if smart_sel:
-            try:
-                loc = page.locator(smart_sel)
-                if loc.count() > 0 and loc.first.is_visible():
-                    loc.first.click()
-                    if delay_ms:
-                        loc.first.type(value, delay=delay_ms)
-                    else:
-                        loc.first.fill(value)
-                    print(f"[smart] ✅ 快照匹配 {keywords[0]!r}: {smart_sel}", flush=True)
-                    return True
-            except Exception as e:
-                print(f"[smart] 快照填写失败({e}), 回退旧 CSS", flush=True)
-
-        # ── 旧 CSS 保底 ──────────────────────────────────────────────────────
-        try:
-            loc = page.locator(fallback_selector)
-            if loc.count() > 0:
-                loc.first.click()
-                if delay_ms:
-                    loc.first.type(value, delay=delay_ms)
-                else:
-                    loc.first.fill(value)
-                print(f"[smart] ⬇ 旧CSS保底 {keywords[0]!r}: {fallback_selector}", flush=True)
-                return True
-        except Exception as e:
-            print(f"[smart] 旧CSS也失败({e}): {fallback_selector}", flush=True)
-        return False
 
     def _build_proxy_cfg(self):
         """
@@ -384,16 +255,8 @@ class BaseController:
         # ── Step 2: 填写邮箱名、密码、生日、姓名 ─────────────────────────
         try:
             # 邮箱（支持用户名被占时自动切换建议名）
-            # [新方法优先+旧CSS保底] 邮箱字段
-            _em_smart = find_input_smart_sync(page, '电子邮件', 'email', 'username', '邮件')
-            if _em_smart and page.locator(_em_smart).count() > 0 and page.locator(_em_smart).first.is_visible():
-                email_input = page.locator(_em_smart)
-                print('[smart] ✅ 快照找到邮箱字段', flush=True)
-            else:
-                email_input = page.locator('[aria-label="新建电子邮件"]')  # 旧CSS保底
-                print('[smart] ⬇ 邮箱回退旧CSS', flush=True)
+            email_input = page.locator('[aria-label="新建电子邮件"]')
             email_input.wait_for(timeout=20000)
-            email_input.click()
             email_input.click()
             email_input.type(email, delay=max(20, 0.006 * self.wait_time), timeout=15000)
             page.keyboard.press("Tab")
@@ -424,12 +287,7 @@ class BaseController:
                     email = picked
                     # 冷却 5 秒，避免触发速率限制
                     page.wait_for_timeout(5000)
-                    # [新方法优先+旧CSS保底] 重试邮箱字段
-                    _em2_smart = find_input_smart_sync(page, '电子邮件', 'email', 'username')
-                    if _em2_smart and page.locator(_em2_smart).count() > 0 and page.locator(_em2_smart).first.is_visible():
-                        email_input = page.locator(_em2_smart)
-                    else:
-                        email_input = page.locator('[aria-label="新建电子邮件"]')  # 旧CSS保底
+                    email_input = page.locator('[aria-label="新建电子邮件"]')
                     email_input.click()
                     page.keyboard.press("Control+a")
                     page.keyboard.press("Delete")
@@ -458,13 +316,7 @@ class BaseController:
                 pass
 
             # 密码（通过代理时页面切换更慢，等待 35s）
-            # [新方法优先+旧CSS保底] 密码字段
-            _pw_smart = find_input_smart_sync(page, 'password', '密码', 'passwd', 'pwd')
-            pwd_loc = (page.locator(_pw_smart)
-                       if (_pw_smart and page.locator(_pw_smart).count() > 0)
-                       else page.locator('[type="password"]'))
-            if not _pw_smart:
-                print('[smart] ⬇ 密码回退旧CSS: [type=password]', flush=True)
+            pwd_loc = page.locator('[type="password"]')
             pwd_loc.wait_for(state="visible", timeout=35000)
             pwd_loc.click()
             pwd_loc.type(password, delay=0.004 * self.wait_time, timeout=35000)
@@ -490,20 +342,11 @@ class BaseController:
                 page.locator('[data-testid="primaryButton"]').click(timeout=5000)
 
             # 姓名
-            # [新方法优先+旧CSS保底] 姓氏字段
-            _ln_smart = find_input_smart_sync(page, 'last', '姓', 'lastname', 'surname')
-            _ln_loc = page.locator(_ln_smart) if _ln_smart else None
-            if not (_ln_loc and _ln_loc.count() > 0 and _ln_loc.first.is_visible()):
-                _ln_loc = page.locator('#lastNameInput')
-                print('[smart] ⬇ 姓氏回退旧CSS: #lastNameInput', flush=True)
-            _ln_loc.wait_for(state="visible", timeout=20000)
-            _ln_loc.type(
+            page.locator('#lastNameInput').wait_for(state="visible", timeout=20000)
+            page.locator('#lastNameInput').type(
                 lastname, delay=0.002 * self.wait_time, timeout=20000)
             page.wait_for_timeout(0.02 * self.wait_time)
-            # [新方法优先+旧CSS保底] 名字字段
-            _fn_smart = find_input_smart_sync(page, 'first', '名', 'firstname', 'given')
-            _fn_loc = page.locator(_fn_smart) if (_fn_smart and page.locator(_fn_smart).count() > 0 and page.locator(_fn_smart).first.is_visible()) else page.locator('#firstNameInput')
-            _fn_loc.fill(firstname, timeout=20000)
+            page.locator('#firstNameInput').fill(firstname, timeout=20000)
 
             # 等满 bot_protection_wait 再点下一步
             elapsed = time.time() - start_time
@@ -690,21 +533,24 @@ class PatchrightController(BaseController):
         失败后使用无障碍按钮点击法；
         最后降级到打码服务。
         """
-        # ── [关键修正] 在任何点击前安装音频URL网络拦截器 ──────────────────
-        # Arkose Labs 音频文件通过XHR/fetch请求，DOM里audio.src始终为空
-        # 必须在accessibility按钮点击前就安装拦截器，才能捕获到音频请求
-        self._net_audio_urls = []
-        _AUDIO_EXTS_HC = ('.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac')
-        _AUDIO_KWS_HC  = ('audio-challenge', '/audio/', '/sound/', 'speak', 'arkose', 'funcaptcha')
-        def _on_audio_request(request):
+        # ── [早期拦截] 在所有交互前安装网络请求拦截器 ──────────────────────
+        # Arkose Labs 音频通过 XHR fetch，DOM 里 audio.src 始终为空
+        # 必须在按住按钮前就开始监听，才能捕获到音频下载请求
+        self._net_audio_urls: list = []
+        _AUDIO_EXTS = ('.mp3', '.wav', '.ogg', '.m4a', '.aac')
+        _AUDIO_KWS  = ('audio-challenge', '/audio/', '/sound/', 'speak',
+                       'arkose', 'funcaptcha', 'hsprotect.net/api')
+        def _on_audio_req(request):
             url = request.url
             low = url.lower()
-            if any(low.endswith(e) for e in _AUDIO_EXTS_HC) or any(kw in low for kw in _AUDIO_KWS_HC):
+            if (any(low.endswith(e) for e in _AUDIO_EXTS)
+                    or any(kw in low for kw in _AUDIO_KWS)
+                    or ('hsprotect.net' in low and '/api/' in low)):
                 if url not in self._net_audio_urls:
                     self._net_audio_urls.append(url)
-                    print(f"[captcha] 🌐 [早期拦截] 音频URL: {url[:100]}", flush=True)
-        page.on("request", _on_audio_request)
-        print("[captcha] ✅ 音频URL拦截器已安装（在按钮点击前）", flush=True)
+                    print(f[captcha] 🌐 [早期拦截] 音频URL: {url[:120]}, flush=True)
+        page.on(request, _on_audio_req)
+        print([captcha] ✅ 音频URL拦截器已安装（在所有按钮点击前）, flush=True)
 
         # ── 方式1：Enter键法（等blob URL → Enter通过）──────────────────
         enter_ok = self._try_enter_challenge_patchright(page)
@@ -1133,9 +979,12 @@ class PatchrightController(BaseController):
                     if _box2 and _box2['width'] > 0:
                         _cx2 = _box2['x'] + _box2['width'] / 2 + _rnd.randint(-10, 10)
                         _cy2 = _box2['y'] + _box2['height'] / 2 + _rnd.randint(-5, 5)
-                        print(f"[captcha] 🖱 点击 再次按下: PAGE=({_cx2:.0f},{_cy2:.0f})", flush=True)
-                        page.mouse.click(_cx2, _cy2)
-                        print("[captcha] ✅ 再次按下已点击！（Arkose）", flush=True)
+                        print(f"[captcha] 🖱 按住 再次按下: PAGE=({_cx2:.0f},{_cy2:.0f})", flush=True)
+                        page.mouse.move(_cx2, _cy2)
+                        page.mouse.down()
+                        page.wait_for_timeout(3200)  # 按住3.2秒，等待音频加载
+                        page.mouse.up()
+                        print("[captcha] ✅ 再次按下已按住3.2s！（Arkose press-and-hold）", flush=True)
                         _press_clicked = True
                     else:
                         print(f"[captcha]   再次按下 bounding_box 无效: {_box2}", flush=True)
@@ -1157,10 +1006,13 @@ class PatchrightController(BaseController):
                                 if _pa_box and _pa_box.get('width', 0) > 0:
                                     _cx = _pa_box['x'] + _pa_box['width'] / 2
                                     _cy = _pa_box['y'] + _pa_box['height'] / 2
-                                    page.mouse.click(_cx, _cy)
+                                    page.mouse.move(_cx, _cy)
+                                    page.mouse.down()
+                                    page.wait_for_timeout(3200)
+                                    page.mouse.up()
                                 else:
                                     _pa_loc.first.click(force=True, timeout=3000)
-                                print(f"[captcha] ✅ 方法B 再次按下 in frame {_hfr.url[:40]}", flush=True)
+                                print(f"[captcha] ✅ 方法B 再次按下(hold 3.2s) in frame {_hfr.url[:40]}", flush=True)
                                 _press_clicked = True
                                 page.wait_for_timeout(3000)
                                 break
@@ -1207,7 +1059,17 @@ class PatchrightController(BaseController):
                                 _clicked_this = False
                                 if _hid:
                                     try:
-                                        _hfr.locator(f'#{_hid}').first.click(force=True, timeout=3000)
+                                        _hloc2 = _hfr.locator(f'#{_hid}')
+                                        _hbox2 = _hloc2.first.bounding_box(timeout=2000)
+                                        if _hbox2 and _hbox2.get('width', 0) > 0:
+                                            _hcx = _hbox2['x'] + _hbox2['width'] / 2
+                                            _hcy = _hbox2['y'] + _hbox2['height'] / 2
+                                            page.mouse.move(_hcx, _hcy)
+                                            page.mouse.down()
+                                            page.wait_for_timeout(3200)
+                                            page.mouse.up()
+                                        else:
+                                            _hfr.locator(f'#{_hid}').first.click(force=True, timeout=3000)
                                         _clicked_this = True
                                     except Exception:
                                         try:
@@ -1338,18 +1200,16 @@ class PatchrightController(BaseController):
         input_frame = None
         play_btn_frames = []  # frames where we found a play button (but no src yet)
 
-        # ── 关键修正：音频URL通过网络请求传输，DOM里audio.src始终为空 ──
-        # 使用 handle_captcha() 顶部安装的早期拦截器 self._net_audio_urls
-        _network_audio_urls = getattr(self, "_net_audio_urls", [])
-
+        # 优先使用 handle_captcha 顶部拦截到的 URL
+        _net_urls = getattr(self, '_net_audio_urls', [])
+        if _net_urls:
+            audio_url = _net_urls[0]
+            print(f[captcha] ✅ 使用早期网络拦截URL: {audio_url[:100]}, flush=True)
 
         def _scan_frames_for_audio(frames):
             nonlocal audio_url, audio_frame, input_frame
-            # 优先使用网络拦截到的URL（网络请求比DOM更可靠）
-            if _network_audio_urls and not audio_url:
-                audio_url = _network_audio_urls[0]
-                print(f"[captcha] ✅ 使用网络拦截URL: {audio_url[:80]}", flush=True)
-                return  # 已找到URL，不需要继续扫描
+            if audio_url:  # 已有网络拦截到的URL，跳过DOM扫描
+                return
             for fr in frames:
                 try:
                     info = fr.evaluate("""
@@ -1411,13 +1271,13 @@ class PatchrightController(BaseController):
                         _pf.evaluate("(document.querySelector('a[role=\"button\"],button') || {}).click && document.querySelector('a[role=\"button\"],button').click()")
                     except Exception:
                         pass
-            page.wait_for_timeout(8000)  # 等音频加载
+            page.wait_for_timeout(5000)  # 等音频加载
             print("[captcha] 点击播放按钮后重新扫描…", flush=True)
             audio_url = None; audio_frame = None; input_frame = None
             _scan_frames_for_audio(page.frames)
 
         if not audio_url:
-            print(f"[captcha] ⚠ 未找到音频元素（网络拦截URLs: {_network_audio_urls}）", flush=True)
+            print("[captcha] ⚠ 未找到音频元素", flush=True)
             return False
 
         print(f"[captcha] 找到音频URL: {audio_url[:80]}", flush=True)
@@ -1817,10 +1677,6 @@ def register_one(ctrl, engine_name: str, headless: bool) -> dict:
     """)
     print(f"[register] 指纹: UA={user_agent[:40]}... WebGL={webgl_vendor[:20]} Screen={sw}x{sh} TZ={timezone_id} MachineID={machine_id[:8]}...", flush=True)
     page = context.new_page()
-    # [SheepKing] 每个任务独立 session 状态
-    _ss: dict = {"access_token": "", "refresh_token": ""}
-    # [j-cli] 网络拦截捕获 OAuth token
-    setup_outlook_intercept(page, _ss)
     t0 = time.time()
 
     try:
@@ -1828,8 +1684,6 @@ def register_one(ctrl, engine_name: str, headless: bool) -> dict:
         result["success"]  = ok
         result["error"]    = "" if ok else msg
         result["email"]    = f"{actual_email}@outlook.com"
-        result["refresh_token"] = _ss.get("refresh_token", "") if "_ss" in dir() else ""
-        result["access_token"]  = _ss.get("access_token", "") if "_ss" in dir() else ""
         result["username"] = actual_email
 
         if ok:
