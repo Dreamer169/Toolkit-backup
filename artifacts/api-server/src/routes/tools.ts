@@ -2281,5 +2281,80 @@ router.post("/tools/outlook/fetch-messages-by-id", async (req, res) => {
   }
 });
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-retoken: spawn outlook_retoken.py, track via jobQueue
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post("/tools/outlook/auto-retoken", async (req, res) => {
+  try {
+    const { allError, headless = true, ids } = req.body as {
+      allError?: boolean; headless?: boolean; ids?: number[];
+    };
+    const { spawn } = await import("child_process");
+    const path  = await import("path");
+
+    const jobId = `retoken_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const job   = await jobQueue.create(jobId);
+    res.json({ success: true, jobId, message: "retoken 任务已启动" });
+
+    const scriptPath = path.resolve(process.cwd(), "outlook_retoken.py");
+    const args: string[] = ["--headless", headless ? "true" : "false"];
+    if (allError) args.push("--all-error");
+    if (ids && ids.length > 0) args.push("--ids", ids.join(","));
+
+    const child = spawn("python3", [scriptPath, ...args], {
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    jobQueue.setChild(jobId, child);
+
+    const pushLog = (type: "log" | "success" | "warn" | "error", msg: string) => {
+      job.logs.push({ type, message: msg.slice(0, 500) });
+    };
+
+    let buf = "";
+    child.stdout?.on("data", (d: Buffer) => {
+      buf += d.toString();
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      lines.forEach((l) => {
+        const t = l.includes("✅") ? "success" : l.includes("❌") || l.includes("失败") ? "error" : l.includes("⚠️") ? "warn" : "log";
+        if (l.trim()) pushLog(t, l);
+      });
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      d.toString().split("\n").filter(Boolean).forEach((l) => pushLog("warn", l));
+    });
+    child.on("close", async (code) => {
+      if (buf.trim()) pushLog("log", buf);
+      await jobQueue.finish(jobId, code ?? -1, code === 0 ? "done" : "failed");
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+router.get("/tools/outlook/auto-retoken/:jobId", async (req, res) => {
+  try {
+    const job = await jobQueue.get(req.params.jobId);
+    if (!job) { res.status(404).json({ success: false, error: "任务不存在" }); return; }
+    res.json({
+      success:  true,
+      jobId:    job.jobId,
+      status:   job.status,
+      logs:     job.logs,
+      exitCode: job.exitCode,
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e) });
+  }
+});
+
+router.delete("/tools/outlook/auto-retoken/:jobId", (req, res) => {
+  const stopped = jobQueue.stop(req.params.jobId);
+  res.json({ success: stopped, message: stopped ? "已停止" : "任务不存在或已结束" });
+});
+
 export default router;
 
