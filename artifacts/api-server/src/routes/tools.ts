@@ -1278,10 +1278,15 @@ router.post("/tools/outlook/register", async (req, res) => {
       if (jsonStart >= 0) {
         const cleaned = jsonBuf.slice(jsonStart).split("\n── JSON")[0].trim();
         const parsed = JSON.parse(cleaned) as Array<Record<string, unknown>>;
+        const tokenMap = new Map<string, { access_token: string; refresh_token: string }>();
         for (const r of parsed) {
           if (r.success && r.email && r.password) {
             const already = job.accounts.find(a => a.email === r.email);
             if (!already) job.accounts.push({ email: String(r.email), password: String(r.password) });
+            tokenMap.set(String(r.email), {
+              access_token:  String(r.access_token  ?? ""),
+              refresh_token: String(r.refresh_token ?? ""),
+            });
           }
         }
       }
@@ -1307,31 +1312,23 @@ router.post("/tools/outlook/register", async (req, res) => {
             job.logs.push({ type: "warn", message: `⚠ DB 保存失败(${acc.email}): ${dbErr}` });
             continue;
           }
-          // 2. 立即 ROPC 换 token（注册后账号刚建，一般无 MFA）
+          // 2. In-browser authorization_code flow token
+          //    ROPC (grant_type=password) disabled for personal MS accounts
           try {
-            const tr = await fetch("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", {
-              method: "POST",
-              headers: { "Content-Type": "application/x-www-form-urlencoded" },
-              body: new URLSearchParams({
-                grant_type: "password",
-                client_id: ROPC_CLIENT_ID,
-                username: acc.email,
-                password: acc.password,
-                scope: ROPC_SCOPE,
-              }).toString(),
-            });
-            const td = await tr.json() as { access_token?: string; refresh_token?: string; error?: string; error_description?: string };
-            if (td.access_token) {
+            const tok           = tokenMap.get(acc.email);
+            const inlineAccess  = tok?.access_token  || undefined;
+            const inlineRefresh = tok?.refresh_token || undefined;
+            if (inlineAccess) {
               await execute(
                 "UPDATE accounts SET token=$1, refresh_token=$2, updated_at=NOW() WHERE email=$3 AND platform='outlook'",
-                [td.access_token, td.refresh_token ?? null, acc.email],
+                [inlineAccess, inlineRefresh ?? null, acc.email],
               );
-              job.logs.push({ type: "success", message: `🔑 ${acc.email} 已自动授权 ✅` });
+              job.logs.push({ type: "success", message: `[key] ${acc.email} in-browser OAuth 授权成功` });
             } else {
-              job.logs.push({ type: "warn", message: `⚠ ${acc.email} 自动授权失败: ${(td.error_description ?? td.error ?? "未知").slice(0, 80)}` });
+              job.logs.push({ type: "warn", message: `[warn] ${acc.email} 未内联到 token，需手动设备码授权` });
             }
           } catch (authErr) {
-            job.logs.push({ type: "warn", message: `⚠ ${acc.email} 自动授权异常: ${authErr}` });
+            job.logs.push({ type: "warn", message: `[err] ${acc.email} 保存 token 异常: ${authErr}` });
           }
         }
         job.logs.push({ type: "log", message: `📦 已保存并尝试授权 ${okCount} 个账号` });

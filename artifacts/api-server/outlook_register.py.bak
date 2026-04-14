@@ -951,7 +951,7 @@ class PatchrightController(BaseController):
             # ── 点击 [aria-label="可访问性挑战"]（轮椅图标，进入音频/按压模式）──
             try:
                 _box1 = _a11y_btn.first.bounding_box(timeout=8000)
-                if _box1 and _box1['width'] > 0 and _box1['y'] > 0 and _box1['x'] > 0:  # fix: removed hardcoded y<720
+                if _box1 and _box1['width'] > 0 and 0 < _box1['y'] < 720:
                     _cx1 = _box1['x'] + _box1['width'] / 2 + _rnd.randint(-5, 5)
                     _cy1 = _box1['y'] + _box1['height'] / 2 + _rnd.randint(-5, 5)
                     print(f"[captcha] 🖱 点击 可访问性挑战: PAGE=({_cx1:.0f},{_cy1:.0f})", flush=True)
@@ -1491,144 +1491,6 @@ class PlaywrightController(BaseController):
 
 
 # ─── 主任务 ───────────────────────────────────────────────────────────────────
-
-def get_oauth_token_in_browser(page, email: str) -> dict:
-    """
-    在已登录的浏览器 session 中做 OAuth2 authorization_code 授权。
-    使用 prompt=consent（新账号首次授权必须经过 consent，prompt=none 会返回 consent_required）。
-    自动捕获同意页面并点击 Accept 按钮，无需人工介入。
-    """
-    import urllib.parse as _up, urllib.request as _ur, json as _json
-
-    CLIENT_ID    = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'
-    REDIRECT_URI = 'https://login.microsoftonline.com/common/oauth2/nativeclient'
-    SCOPES = [
-        'offline_access',
-        'https://graph.microsoft.com/Mail.Read',
-        'https://graph.microsoft.com/Mail.ReadWrite',
-        'https://graph.microsoft.com/User.Read',
-    ]
-    SCOPE = ' '.join(SCOPES)
-
-    captured = {'code': None, 'error': None, 'error_description': None}
-
-    def handle_route(route):
-        url = route.request.url
-        if 'nativeclient' in url:
-            params = _up.parse_qs(_up.urlparse(url).query)
-            if 'code' in params:
-                captured['code'] = params['code'][0]
-            elif 'error' in params:
-                captured['error']             = params['error'][0]
-                captured['error_description'] = params.get('error_description', [''])[0]
-        try:
-            route.abort()
-        except Exception:
-            pass
-
-    try:
-        page.route(f'{REDIRECT_URI}**', handle_route)
-        scope_encoded = '%20'.join(_up.quote(s, safe=':/') for s in SCOPES)
-        # 修复：用 prompt=consent 代替 prompt=none
-        # prompt=none 对新账号必然返回 consent_required 错误
-        auth_url = (
-            'https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize'
-            f'?client_id={CLIENT_ID}'
-            '&response_type=code'
-            f'&redirect_uri={_up.quote(REDIRECT_URI, safe="")}'
-            f'&scope={scope_encoded}'
-            '&prompt=consent'
-            f'&login_hint={_up.quote(email, safe="")}'
-        )
-        print(f'[oauth] 导航到授权页（prompt=consent）...', flush=True)
-        try:
-            page.goto(auth_url, timeout=20000, wait_until='domcontentloaded')
-        except Exception:
-            pass  # nativeclient redirect 造成 navigation error 属正常
-
-        # 等待页面加载
-        page.wait_for_timeout(3000)
-
-        # 自动点击同意按钮（consent 页面）
-        _consent_selectors = [
-            '[data-testid="appConsentPrimaryButton"]',
-            'input[type="submit"][value*="Accept"]',
-            'input[type="submit"][value*="Approve"]',
-            'button:has-text("Accept")',
-            'button:has-text("Approve")',
-            'button:has-text("接受")',
-            'button:has-text("允许")',
-            'button:has-text("继续")',
-            'input[value="Continue"]',
-        ]
-        for sel in _consent_selectors:
-            try:
-                btn = page.locator(sel).first
-                if btn.is_visible(timeout=2000):
-                    btn.click()
-                    print(f'[oauth] ✅ 点击同意按钮: {sel}', flush=True)
-                    page.wait_for_timeout(3000)
-                    break
-            except Exception:
-                continue
-
-        # 再等一轮捕获重定向
-        page.wait_for_timeout(3000)
-
-        # 从当前 URL 补捉 code / error
-        if not captured['code'] and not captured['error']:
-            cur = page.url or ''
-            if '?' in cur:
-                params = _up.parse_qs(_up.urlparse(cur).query)
-                if 'code' in params:
-                    captured['code'] = params['code'][0]
-                elif 'error' in params:
-                    captured['error']             = params['error'][0]
-                    captured['error_description'] = params.get('error_description', [''])[0]
-
-        try:
-            page.unroute(f'{REDIRECT_URI}**')
-        except Exception:
-            pass
-    except Exception as e:
-        print(f'[oauth] 授权导航异常: {e}', flush=True)
-        return {}
-
-    code = captured['code']
-    if not code:
-        err  = captured.get('error') or 'no_redirect'
-        desc = (captured.get('error_description') or '未捕获到重定向')[:150]
-        print(f'[oauth] ❌ 授权失败 [{err}]: {desc}', flush=True)
-        return {}
-
-    print('[oauth] ✅ 获取到授权码，正在换取 token...', flush=True)
-    try:
-        token_body = _up.urlencode({
-            'grant_type':   'authorization_code',
-            'client_id':    CLIENT_ID,
-            'code':         code,
-            'redirect_uri': REDIRECT_URI,
-            'scope':        SCOPE,
-        }).encode()
-        req = _ur.Request(
-            'https://login.microsoftonline.com/consumers/oauth2/v2.0/token',
-            data=token_body,
-            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-        )
-        resp = _json.loads(_ur.urlopen(req, timeout=15).read())
-        if resp.get('access_token'):
-            rt = resp.get('refresh_token', '')
-            ei = resp.get('expires_in', 3600)
-            print(f'[oauth] ✅ {email} 授权成功！expires_in={ei}s, refresh_token={rt[:20]}...', flush=True)
-            return {'access_token': resp['access_token'], 'refresh_token': rt, 'expires_in': ei}
-        else:
-            print(f'[oauth] ❌ token 交换失败: {resp.get("error")} - {resp.get("error_description","")[:80]}', flush=True)
-            return {}
-    except Exception as e:
-        print(f'[oauth] ❌ token 请求异常: {e}', flush=True)
-        return {}
-
-
 def register_one(ctrl, engine_name: str, headless: bool) -> dict:
     username, fn_eng, ln_eng = gen_email_username()
     email    = username
@@ -1652,18 +1514,18 @@ def register_one(ctrl, engine_name: str, headless: bool) -> dict:
     # 常见 US 用户分辨率与像素比
     SCREEN_PRESETS = [
         (1920, 1080, 1),
+        (1366, 768,  1),
         (1440, 900,  1),
         (1536, 864,  1),
         (2560, 1440, 2),
         (1600, 900,  1),
+        (1280, 800,  1),
         (1680, 1050, 1),
-        (1920, 1200, 1),
-        (2560, 1080, 1),
-    ]  # 已移除 1366x768 和 1280x800：CAPTCHA按钮在小视口下会超出屏幕
+    ]
     sw, sh, dpr = random.choice(SCREEN_PRESETS)
     # 窗口比屏幕略小（浏览器 chrome 占用部分空间）
     vw = sw - random.randint(0, 40)
-    vh = max(900, sh - random.randint(60, 130))  # 保证视口至少900高，防止CAPTCHA超出
+    vh = sh - random.randint(60, 130)
 
     # 常见 Chrome UA（匹配 patchright 基于的 Chromium 版本）
     CHROME_UAS = [
@@ -1825,16 +1687,6 @@ def register_one(ctrl, engine_name: str, headless: bool) -> dict:
         result["username"] = actual_email
 
         if ok:
-            # ── in-browser OAuth2 authorization_code 授权 ──────────────
-            try:
-                _tokens = get_oauth_token_in_browser(page, f"{actual_email}@outlook.com")
-                result["access_token"]  = _tokens.get("access_token", "")
-                result["refresh_token"] = _tokens.get("refresh_token", "")
-            except Exception as _oe:
-                print(f"[oauth] 捕获异常: {_oe}", flush=True)
-                result["access_token"]  = ""
-                result["refresh_token"] = ""
-            # ───────────────────────────────────────────────────────────
             try:
                 page.screenshot(path=f"/tmp/outlook_ok_{actual_email}.png")
             except Exception:

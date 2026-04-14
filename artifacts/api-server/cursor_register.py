@@ -133,26 +133,31 @@ async def outlook_web_wait_otp_async(email: str, password: str, timeout: int = 1
         from playwright.async_api import async_playwright
 
     deadline = time.time() + timeout
+    import os as _os
+    # 检查 DISPLAY（Xvfb 模式）决定是否无头
+    _outlook_headless = _os.environ.get("DISPLAY", "") == ""
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
-            headless=True,
+            headless=_outlook_headless,
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
         )
         ctx = await browser.new_context(locale="en-US", timezone_id="America/New_York")
         page = await ctx.new_page()
         try:
-            emit("info", "🔐 登录 Outlook.com 准备接收验证码...")
-            await page.goto("https://login.live.com/login.srf?wa=wsignin1.0", timeout=30000)
-            await page.wait_for_timeout(1500)
+            emit("info", f"🔐 登录 Outlook.com (headless={_outlook_headless})...")
+            await page.goto("https://login.live.com/login.srf?wa=wsignin1.0", timeout=45000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
 
-            # 填邮箱
+            # 填邮箱 - 等待 input 出现再填
+            await page.wait_for_selector("input[type='email'], input[name='loginfmt']", timeout=20000, state="visible")
             await page.fill("input[type='email'], input[name='loginfmt']", email)
             await page.click("input[type='submit'], button[type='submit']")
             await page.wait_for_timeout(2000)
 
             # 填密码
             try:
-                await page.fill("input[type='password'], input[name='passwd']", password, timeout=8000)
+                await page.wait_for_selector("input[type='password'], input[name='passwd']", timeout=10000, state="visible")
+                await page.fill("input[type='password'], input[name='passwd']", password, timeout=10000)
                 await page.click("input[type='submit'], button[type='submit']")
                 await page.wait_for_timeout(3000)
             except Exception:
@@ -548,7 +553,7 @@ async def register_one(proxy: str, headless: bool = True, provided_email: str = 
             # 并行等待 OTP
             if provided_email and provided_email_password:
                 otp = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: outlook_web_wait_otp(provided_email, provided_email_password, timeout=120)
+                    None, lambda: _get_otp_via_graph_or_browser(provided_email, provided_email_password, timeout=120)
                 )
             else:
                 otp = await asyncio.get_event_loop().run_in_executor(
@@ -671,7 +676,24 @@ async def main():
     success_count = 0
     accounts = []
 
-    emit("info", f"🚀 Cursor 注册 v2 (CDP拦截+快照检测): {count}个 | 并发: {args.concurrency} | 代理: {args.proxy or '无'}")
+    # 非无头模式：启动 Xvfb 虚拟显示器（绕过 CF headless 检测）
+    _xvfb_proc = None
+    if not headless:
+        import os, subprocess, time as _t
+        display_num = 99
+        try:
+            _xvfb_proc = subprocess.Popen(
+                ["Xvfb", f":{display_num}", "-screen", "0", "1920x1080x24", "-ac"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            _t.sleep(1.5)
+            os.environ["DISPLAY"] = f":{display_num}"
+            emit("info", f"🖥️  Xvfb 虚拟显示器已启动 (DISPLAY=:{display_num})")
+        except FileNotFoundError:
+            emit("warn", "⚠️  Xvfb 未找到，回退到无头模式")
+            headless = True
+
+    emit("info", f"🚀 Cursor 注册 v2 (CDP拦截+快照检测): {count}个 | 并发: {args.concurrency} | 代理: {args.proxy or '无'} | 无头: {headless}")
 
     sem = asyncio.Semaphore(args.concurrency)
 
@@ -688,6 +710,11 @@ async def main():
             success_count += 1
         elif isinstance(r, Exception):
             emit("error", f"任务异常: {r}")
+
+    # 清理 Xvfb
+    if _xvfb_proc is not None:
+        try: _xvfb_proc.terminate()
+        except: pass
 
     emit("done", f"注册任务完成 · 成功 {success_count} 个 / 共 {count} 个 {'✅' if success_count else '❌'}")
     if accounts:

@@ -106,6 +106,11 @@ export default function MailCenter() {
   const [batchOAuth, setBatchOAuth]       = useState<BatchOAuthState | null>(null);
   const [batchOAuthBusy, setBatchOAuthBusy] = useState(false);
   const pollRef                           = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [retokenJobId,  setRetokenJobId]  = useState<string | null>(null);
+  const [retokenBusy,   setRetokenBusy]   = useState(false);
+  const [retokenLog,    setRetokenLog]     = useState<string[]>([]);
+  const [retokenOpen,   setRetokenOpen]   = useState(false);
+
   const batchPollRef                      = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadAccounts = useCallback(async () => {
@@ -231,6 +236,25 @@ export default function MailCenter() {
     } else {
       alert(d.error ?? '清洗失败');
     }
+  };
+
+
+  // browser auto-retoken
+  const startAutoRetoken = async () => {
+    if (!confirm('将用浏览器自动登录所有 error 状态账号并重新授权，确定？')) return;
+    setRetokenBusy(true); setRetokenLog([]); setRetokenOpen(true);
+    const d = await fetch(`${API}/tools/outlook/auto-retoken`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allError: true, headless: true }),
+    }).then(r => r.json()).catch(() => ({ success: false, error: '网络错误' }));
+    if (!d.success) { setRetokenBusy(false); alert(d.error ?? '启动失败'); return; }
+    setRetokenJobId(d.jobId);
+    const iv = setInterval(async () => {
+      const st = await fetch(`${API}/tools/outlook/auto-retoken/${d.jobId}`).then(r => r.json()).catch(() => ({}));
+      if (st.logs) setRetokenLog(st.logs.map((l: {message: string}) => l.message));
+      if (st.status === 'done') { clearInterval(iv); setRetokenBusy(false); await loadAccounts(); }
+    }, 3000);
   };
 
   const verifySingle = async (acc: Account) => {
@@ -453,6 +477,7 @@ export default function MailCenter() {
           >
             {purging ? '清洗中…' : '🗑️ 一键清洗风控'}
           </button>
+          <button onClick={startAutoRetoken} disabled={retokenBusy || accounts.length === 0} className="px-3 py-1.5 text-xs rounded bg-violet-600 hover:bg-violet-500 disabled:opacity-40 transition-colors text-white font-medium">{retokenBusy ? "🔄 重授权中…" : "🤖 自动 retoken"}</button>
           {purgeStats && (
             <div className="text-[10px] px-1 py-0.5 rounded bg-[#21262d] text-gray-400 flex gap-2">
               <span className="text-emerald-400">✓ 有效 {purgeStats.valid}</span>
@@ -899,6 +924,16 @@ export default function MailCenter() {
                 完成
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {retokenOpen && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-[#161b22] border border-[#30363d] rounded-xl w-full max-w-2xl flex flex-col max-h-[80vh]">
+            <div className="px-5 py-3 border-b border-[#30363d] flex items-center justify-between"><h3 className="text-sm font-semibold text-white">🤖 自动 retoken 进度</h3>{!retokenBusy && (<button onClick={() => setRetokenOpen(false)} className="text-gray-500 hover:text-gray-300 text-xs">关闭</button>)}</div>
+            <div className="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-1">{retokenLog.length === 0 ? <p className="text-gray-600 animate-pulse">等待输出…</p> : retokenLog.map((line, i) => (<p key={i} className={line.includes("✅") ? "text-emerald-400" : line.includes("❌") ? "text-red-400" : line.includes("⚠️") ? "text-amber-400" : "text-gray-300"}>{line}</p>))}</div>
+            {retokenBusy && <p className="px-5 py-2 text-[10px] text-gray-600 animate-pulse border-t border-[#30363d]">处理中，每 3 秒刷新…</p>}
           </div>
         </div>
       )}
